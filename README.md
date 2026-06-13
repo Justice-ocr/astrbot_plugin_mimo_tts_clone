@@ -155,7 +155,7 @@ audio_path = await plugin.text_to_speech(
 
 如果配合 `astrbot_plugin_daily_sharing` 使用，可以在每日分享 Pages 里选择语音 provider：
 
-- `calibrated_tool`：点击“校准语音”，让每日分享自动命中本插件的 `mimo_tts_speak` LLM 工具。
+- `calibrated_tool`：点击“校准语音”，让每日分享自动命中本插件的 `mimo_tts_speak` LLM 工具。工具参数为 `text`、`emotion`、`voice`、`style`。
 - `generic_plugin`：手动配置插件名 `astrbot_plugin_mimo_tts_clone`，方法路径 `text_to_speech`，文本参数 `text`，结果字段留空即可。
 
 ## 插件信息

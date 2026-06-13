@@ -295,7 +295,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             text: str,
             emotion: str = "neutral",
             voice: str = "",
-            context: str = "",
+            style: str = "",
         ):
             """Generate and send MiMo TTS voice audio.
 
@@ -303,7 +303,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 text(string): Text that should be converted to speech.
                 emotion(string): Optional emotion, one of happy, sad, angry, neutral.
                 voice(string): Optional voice name or voice id.
-                context(string): Optional temporary style instruction.
+                style(string): Optional temporary style instruction.
 
             Returns:
                 string: Generated audio path or a short failure message.
@@ -317,7 +317,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                     content,
                     voice_name=str(voice or "").strip() or None,
                     emotion=emotion,
-                    context=context,
+                    context=style,
                     user_id=str(getattr(event, "get_sender_id", lambda: "")() or "").strip(),
                     group_id=str(getattr(event, "unified_msg_origin", "") or "").strip()
                     or self._conversation_id(event),

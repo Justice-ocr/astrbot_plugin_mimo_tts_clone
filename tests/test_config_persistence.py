@@ -1,5 +1,6 @@
 import importlib
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -219,6 +220,12 @@ class ConfigPersistenceTests(unittest.TestCase):
 
     def test_mimo_tts_speak_llm_tool_is_available_when_supported(self):
         self.assertTrue(hasattr(self.module.MimoTTSClonePlugin, "mimo_tts_speak"))
+
+    def test_mimo_tts_speak_avoids_reserved_context_argument(self):
+        params = inspect.signature(self.module.MimoTTSClonePlugin.mimo_tts_speak).parameters
+
+        self.assertNotIn("context", params)
+        self.assertIn("style", params)
 
 
 if __name__ == "__main__":
