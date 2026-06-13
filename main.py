@@ -89,6 +89,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             encode_voice_file_data_url,
             pathlib.Path(voice.audio_path),
             max_bytes=self.plugin_config.max_voice_file_bytes,
+            max_base64_chars=self.plugin_config.max_voice_file_bytes,
         )
         output_dir = pathlib.Path(self.data_dir) / "outputs"
         output_path = output_dir / f"mimo_tts_{time.time_ns()}.wav"

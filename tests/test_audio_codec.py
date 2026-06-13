@@ -16,11 +16,11 @@ class AudioCodecTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             sample = Path(temp_dir) / "voice.mp3"
-            sample.write_bytes(b"mp3-data")
+            sample.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00mp3-data")
 
             data_url = encode_voice_file_data_url(sample, max_bytes=100)
 
-        self.assertEqual(data_url, "data:audio/mpeg;base64,bXAzLWRhdGE=")
+        self.assertTrue(data_url.startswith("data:audio/mpeg;base64,SUQz"))
 
     def test_encode_voice_file_data_url_rejects_unsupported_format(self):
         import tempfile
@@ -37,7 +37,27 @@ class AudioCodecTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             sample = Path(temp_dir) / "voice.wav"
-            sample.write_bytes(b"0" * 101)
+            sample.write_bytes(b"RIFF" + b"0" * 4 + b"WAVE" + b"0" * 89)
 
             with self.assertRaisesRegex(AudioValidationError, "Voice file too large"):
                 encode_voice_file_data_url(sample, max_bytes=100)
+
+    def test_encode_voice_file_data_url_rejects_invalid_audio_header(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample = Path(temp_dir) / "voice.mp3"
+            sample.write_bytes(b"not really an mp3")
+
+            with self.assertRaisesRegex(AudioValidationError, "Invalid mp3 audio header"):
+                encode_voice_file_data_url(sample, max_bytes=100)
+
+    def test_encode_voice_file_data_url_rejects_large_base64_payload(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample = Path(temp_dir) / "voice.wav"
+            sample.write_bytes(b"RIFF" + b"0" * 4 + b"WAVE" + b"0" * 20)
+
+            with self.assertRaisesRegex(AudioValidationError, "Base64 audio payload too large"):
+                encode_voice_file_data_url(sample, max_bytes=100, max_base64_chars=40)

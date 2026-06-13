@@ -9,7 +9,12 @@ import time
 
 from quart import jsonify, request
 
-from .core.audio_codec import AudioValidationError, SUPPORTED_AUDIO_MIME, validate_voice_file
+from .core.audio_codec import (
+    AudioValidationError,
+    SUPPORTED_AUDIO_MIME,
+    estimate_base64_chars,
+    validate_voice_file,
+)
 from .core.emotion import SUPPORTED_EMOTIONS, normalize_emotion
 from .core.text_processing import clean_tts_text
 
@@ -74,13 +79,20 @@ class PagesAPIMixin:
         if len(data) > self.plugin_config.max_voice_file_bytes:
             return jsonify({"success": False, "error": "音频文件超过大小限制"}), 400
 
+        if estimate_base64_chars(len(data)) > self.plugin_config.max_voice_file_bytes:
+            return jsonify({"success": False, "error": "音频 Base64 编码后超过大小限制"}), 400
+
         voice_dir = pathlib.Path(self.data_dir) / "voice_refs"
         voice_dir.mkdir(parents=True, exist_ok=True)
         stem = re.sub(r"[^\w.-]+", "_", pathlib.Path(filename).stem).strip("._") or "voice"
         save_path = voice_dir / f"{time.time_ns()}_{stem[:60]}{ext}"
         await asyncio.to_thread(save_path.write_bytes, data)
         try:
-            validate_voice_file(save_path, max_bytes=self.plugin_config.max_voice_file_bytes)
+            validate_voice_file(
+                save_path,
+                max_bytes=self.plugin_config.max_voice_file_bytes,
+                max_base64_chars=self.plugin_config.max_voice_file_bytes,
+            )
         except AudioValidationError as exc:
             save_path.unlink(missing_ok=True)
             return jsonify({"success": False, "error": str(exc)}), 400
