@@ -3,22 +3,58 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MiMo TTS 音色克隆</title>
+  <title>MiMo Sound Studio</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <div>
-        <h1>MiMo TTS 音色克隆</h1>
-        <p>管理参考音频、情绪音色路由、风格控制和官方 API 配置。</p>
+  <main class="studio-shell">
+    <header class="studio-hero">
+      <div class="hero-copy">
+        <span class="eyebrow"><span class="pulse-dot"></span> MiMo VoiceClone Workspace</span>
+        <h1>MiMo Sound Studio</h1>
+        <p>用官方 voiceclone API 管理授权音色、情绪路由、风格指令和试听工作流。</p>
+        <div class="hero-actions">
+          <button id="save-config" class="primary">保存配置</button>
+          <a class="ghost-link" href="https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/speech-synthesis-v2.5" target="_blank" rel="noreferrer">查看 MiMo 文档</a>
+        </div>
       </div>
-      <button id="save-config" class="primary">保存配置</button>
+      <div class="hero-console" aria-label="MiMo TTS pipeline preview">
+        <div class="console-bar"><span></span><span></span><span></span></div>
+        <pre><code>agent.voice.clone --model mimo-v2.5
+sample: authorized_voice.wav
+route: auto emotion -> selected voice
+output: non-streaming wav</code></pre>
+      </div>
     </header>
 
-    <section class="panel">
-      <h2>官方 API</h2>
-      <div class="grid">
+    <section class="status-grid" aria-label="当前工作区状态">
+      <article class="status-card">
+        <span>模型</span>
+        <strong id="model-status">voiceclone</strong>
+      </article>
+      <article class="status-card">
+        <span>情绪路由</span>
+        <strong id="emotion-status">ON</strong>
+      </article>
+      <article class="status-card">
+        <span>长文本分段</span>
+        <strong id="segment-status">ON</strong>
+      </article>
+      <article class="status-card">
+        <span>音色数量</span>
+        <strong id="hero-voice-count">0</strong>
+      </article>
+    </section>
+
+    <section class="studio-card api-card">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">API CONFIG</span>
+          <h2>官方 API</h2>
+        </div>
+        <span class="soft-pill">OpenAI-compatible</span>
+      </div>
+      <div class="form-grid">
         <label>API Key<input id="api-key" type="password" autocomplete="off" /></label>
         <label>Base URL<input id="base-url" type="text" /></label>
         <label>模型<input id="model" type="text" /></label>
@@ -29,21 +65,29 @@
       <label class="wide">默认风格指令<textarea id="default-context" rows="2" placeholder="例如：自然、温柔、清晰地朗读。"></textarea></label>
     </section>
 
-    <section class="panel">
-      <h2>情绪与分段</h2>
-      <div class="grid">
-        <label class="check"><input id="emotion-routing-enabled" type="checkbox" /> 启用自动情绪路由</label>
-        <label class="check"><input id="segment-enabled" type="checkbox" /> 启用长文本分段</label>
+    <section class="studio-card">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">ROUTER</span>
+          <h2>情绪与分段</h2>
+        </div>
+      </div>
+      <div class="switch-grid">
+        <label class="studio-switch"><input id="emotion-routing-enabled" type="checkbox" /><span>启用自动情绪路由</span></label>
+        <label class="studio-switch"><input id="segment-enabled" type="checkbox" /><span>启用长文本分段</span></label>
         <label>分段阈值<input id="segment-threshold-chars" type="number" min="1" /></label>
         <label>最大分段数<input id="segment-max-segments" type="number" min="1" /></label>
       </div>
       <div id="emotion-defaults" class="emotion-grid"></div>
     </section>
 
-    <section class="panel">
+    <section class="studio-card voice-workbench">
       <div class="section-head">
-        <h2>音色库</h2>
-        <span id="voice-count" class="muted">0 个音色</span>
+        <div>
+          <span class="section-kicker">VOICE LIBRARY</span>
+          <h2>音色库</h2>
+        </div>
+        <span id="voice-count" class="soft-pill">0 个音色</span>
       </div>
       <div class="upload-row">
         <input id="voice-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" />
@@ -54,22 +98,30 @@
         </select>
         <input id="voice-style-tags" type="text" placeholder="MiMo 标签，如 [whisper]" />
         <input id="voice-style-context" type="text" placeholder="音色风格指令" />
-        <label class="check"><input id="voice-consent" type="checkbox" /> 已获授权</label>
+        <label class="studio-switch consent"><input id="voice-consent" type="checkbox" /><span>已获授权</span></label>
         <button id="upload-voice">上传音色</button>
       </div>
       <div id="voice-list" class="voice-list"></div>
     </section>
 
-    <section class="panel">
-      <h2>试听</h2>
+    <section class="studio-card preview-card">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">PREVIEW</span>
+          <h2>试听工作台</h2>
+        </div>
+      </div>
       <div class="preview-row">
         <select id="preview-voice"></select>
         <select id="preview-emotion"></select>
         <input id="preview-text" type="text" placeholder="输入试听文本" />
-        <button id="preview-btn">试听</button>
+        <button id="preview-btn" class="primary">试听</button>
       </div>
-      <label class="wide">临时风格指令<textarea id="preview-context" rows="2"></textarea></label>
-      <audio id="preview-audio" controls></audio>
+      <label class="wide">临时风格指令<textarea id="preview-context" rows="2" placeholder="例如：更轻、更近、像深夜电台。"></textarea></label>
+      <div class="audio-frame">
+        <div class="wave-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <audio id="preview-audio" controls></audio>
+      </div>
     </section>
   </main>
   <div id="toast" class="toast"></div>

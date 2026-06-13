@@ -16,7 +16,7 @@ function toast(message, type = 'ok') {
   el.className = `toast ${type}`;
   el.style.display = 'block';
   clearTimeout(el._timer);
-  el._timer = setTimeout(() => { el.style.display = 'none'; }, 2800);
+  el._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
 function escapeHtml(value) {
@@ -59,6 +59,13 @@ function fillEmotionSelect(select, includeAuto = false) {
   });
 }
 
+function updateStatus() {
+  $('model-status').textContent = state.config.model || 'voiceclone';
+  $('emotion-status').textContent = state.config.emotion_routing_enabled === false ? 'OFF' : 'ON';
+  $('segment-status').textContent = state.config.segment_enabled === false ? 'OFF' : 'ON';
+  $('hero-voice-count').textContent = String(state.voices.length);
+}
+
 function applyState(payload) {
   state.config = payload.config || {};
   state.voices = payload.voices || [];
@@ -79,6 +86,7 @@ function applyState(payload) {
 
   fillEmotionSelect($('voice-emotion'), true);
   fillEmotionSelect($('preview-emotion'), true);
+  updateStatus();
   renderEmotionDefaults();
   renderVoices();
 }
@@ -87,17 +95,20 @@ function renderEmotionDefaults() {
   const wrap = $('emotion-defaults');
   wrap.innerHTML = '';
   const defaults = state.defaults.emotion_defaults || {};
+
   state.emotions.forEach(emotion => {
-    const card = document.createElement('div');
-    card.className = 'emotion-card';
     const selected = defaults[emotion] || '';
     const options = ['<option value="">未设置</option>'].concat(
       state.voices.map(voice => (
         `<option value="${voice.id}" ${voice.id === selected ? 'selected' : ''}>${escapeHtml(voice.name)}</option>`
       ))
     ).join('');
+
+    const card = document.createElement('div');
+    card.className = 'emotion-card';
     card.innerHTML = `
       <strong>${emotion}</strong>
+      <span class="voice-meta">${selected ? '已绑定情绪默认音色' : '跟随用户/群/全局默认'}</span>
       <select data-emotion="${emotion}">${options}</select>
     `;
     wrap.appendChild(card);
@@ -112,7 +123,7 @@ function renderVoices() {
   select.innerHTML = '';
 
   if (!state.voices.length) {
-    list.innerHTML = '<div class="muted">暂无音色，请上传 mp3 或 wav 参考音频。</div>';
+    list.innerHTML = '<div class="empty-state">暂无音色。上传已授权的 mp3 / wav 样本后，MiMo 会按该样本进行 voiceclone。</div>';
     select.innerHTML = '<option value="">暂无音色</option>';
     renderEmotionDefaults();
     return;
@@ -124,20 +135,30 @@ function renderVoices() {
     const emotionDefaults = Object.entries(state.defaults.emotion_defaults || {})
       .filter(([, voiceId]) => voiceId === voice.id)
       .map(([emotion]) => emotion);
+
     const card = document.createElement('div');
-    card.className = 'voice-card';
+    card.className = `voice-card${disabled ? ' is-disabled' : ''}`;
     card.innerHTML = `
       <div>
-        <div class="voice-title">${escapeHtml(voice.name)}${isDefault ? ' · 全局默认' : ''}${disabled ? ' · 已禁用' : ''}</div>
+        <div class="voice-title">
+          <span>${escapeHtml(voice.name)}</span>
+          ${isDefault ? '<span class="tag">全局默认</span>' : ''}
+          ${disabled ? '<span class="tag">已禁用</span>' : ''}
+        </div>
         <div class="voice-meta">${escapeHtml(voice.description || '无说明')} · ${escapeHtml(voice.id)}</div>
-        <div class="voice-meta">建议情绪：${escapeHtml(voice.emotion || '未设置')} · 情绪默认：${escapeHtml(emotionDefaults.join(', ') || '无')}</div>
-        <div class="voice-meta">风格：${escapeHtml(voice.style_context || '无')} ${voice.style_tags ? `· 标签：${escapeHtml(voice.style_tags)}` : ''}</div>
       </div>
+      <div class="tag-row">
+        <span class="tag">建议情绪：${escapeHtml(voice.emotion || '未设置')}</span>
+        <span class="tag">情绪默认：${escapeHtml(emotionDefaults.join(', ') || '无')}</span>
+        ${voice.style_tags ? `<span class="tag">标签：${escapeHtml(voice.style_tags)}</span>` : ''}
+      </div>
+      <div class="voice-meta">风格指令：${escapeHtml(voice.style_context || '无')}</div>
       <div class="voice-actions">
         <button data-action="default" data-id="${voice.id}">设为默认</button>
         <button data-action="toggle" data-id="${voice.id}">${disabled ? '启用' : '禁用'}</button>
         <button class="danger" data-action="delete" data-id="${voice.id}">删除</button>
-      </div>`;
+      </div>
+    `;
     list.appendChild(card);
 
     const option = document.createElement('option');
@@ -157,6 +178,7 @@ async function saveConfig() {
   const res = await bridge.apiPost('save_config', configPayload());
   if (!res.success) throw new Error(res.error || '保存失败');
   state.config = res.config || state.config;
+  updateStatus();
   toast('配置已保存');
 }
 
@@ -177,7 +199,9 @@ async function uploadVoice() {
     style_context: $('voice-style-context').value.trim(),
   });
 
-  ['voice-file', 'voice-name', 'voice-desc', 'voice-style-tags', 'voice-style-context'].forEach(id => { $(id).value = ''; });
+  ['voice-file', 'voice-name', 'voice-desc', 'voice-style-tags', 'voice-style-context'].forEach(id => {
+    $(id).value = '';
+  });
   $('voice-emotion').value = '';
   $('voice-consent').checked = false;
   await refresh();
@@ -187,6 +211,7 @@ async function uploadVoice() {
 async function voiceAction(action, id) {
   const voice = state.voices.find(item => item.id === id);
   if (!voice) return;
+
   if (action === 'default') {
     const res = await bridge.apiPost('set_default_voice', { scope: 'global', voice_id: id });
     if (!res.success) throw new Error(res.error || '设置默认失败');
@@ -198,6 +223,7 @@ async function voiceAction(action, id) {
     const res = await bridge.apiPost('delete_voice', { voice_id: id });
     if (!res.success) throw new Error(res.error || '删除失败');
   }
+
   await refresh();
 }
 
@@ -213,6 +239,7 @@ async function preview() {
   const voiceId = $('preview-voice').value;
   if (!text) throw new Error('请输入试听文本');
   if (!voiceId) throw new Error('请选择音色');
+
   const res = await bridge.apiPost('synthesize_preview', {
     text,
     voice_id: voiceId,
@@ -220,6 +247,7 @@ async function preview() {
     context: $('preview-context').value,
   });
   if (!res.success || !res.audio_data) throw new Error(res.error || '试听失败');
+
   $('preview-audio').src = res.audio_data;
   $('preview-audio').play().catch(() => {});
   toast(`试听生成成功，情绪：${res.emotion || 'neutral'}`);
@@ -240,6 +268,7 @@ async function init() {
   bind('save-config', saveConfig);
   bind('upload-voice', uploadVoice);
   bind('preview-btn', preview);
+
   $('voice-list').addEventListener('click', async event => {
     const button = event.target.closest('button[data-action]');
     if (!button) return;
@@ -249,6 +278,7 @@ async function init() {
       toast(String(error.message || error), 'err');
     }
   });
+
   $('emotion-defaults').addEventListener('change', async event => {
     const select = event.target.closest('select[data-emotion]');
     if (!select) return;
@@ -258,6 +288,7 @@ async function init() {
       toast(String(error.message || error), 'err');
     }
   });
+
   await refresh();
 }
 

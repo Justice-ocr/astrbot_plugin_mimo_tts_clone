@@ -9,3 +9,4 @@ venv/
 data/
 voice_refs/
 outputs/
+.superpowers/
