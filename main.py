@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import shlex
 import time
@@ -37,16 +38,61 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         self.context = context
         self.logger = logger
         self._native_config = config if hasattr(config, "save_config") else None
-        self.config = normalize_config(dict(config) if isinstance(config, dict) else {})
-        self.plugin_config = build_plugin_config(self.config)
-        self.emotion_router = EmotionRouter(emotion_contexts=self.plugin_config.emotion_contexts)
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_mimo_tts_clone")
         pathlib.Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+        self._config_file = pathlib.Path(self.data_dir) / "config.json"
+        native_config = self._coerce_config(config)
+        persisted_config = self._load_persisted_config()
+        self.config = normalize_config({**native_config, **persisted_config})
+        self.plugin_config = build_plugin_config(self.config)
+        self.emotion_router = EmotionRouter(emotion_contexts=self.plugin_config.emotion_contexts)
         self.voice_store = VoiceStore(self.data_dir)
         self._tts_sem = asyncio.Semaphore(self.plugin_config.max_concurrency)
         self._register_pages_web_api()
 
-    def _update_runtime_config(self, changes: dict[str, Any]) -> None:
+    @staticmethod
+    def _coerce_config(config: Any) -> dict[str, Any]:
+        if isinstance(config, dict):
+            return dict(config)
+        items = getattr(config, "items", None)
+        if callable(items):
+            try:
+                return dict(items())
+            except Exception:
+                return {}
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            values = {}
+            for key in normalize_config({}):
+                try:
+                    value = getter(key)
+                except Exception:
+                    continue
+                if value is not None:
+                    values[key] = value
+            return values
+        return {}
+
+    def _load_persisted_config(self) -> dict[str, Any]:
+        try:
+            if not self._config_file.is_file():
+                return {}
+            data = json.loads(self._config_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self.logger.warning("[mimo-tts] failed to read persisted config: %s", exc)
+            return {}
+
+    def _persist_local_config(self) -> None:
+        self._config_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._config_file.with_suffix(".json.tmp")
+        tmp_path.write_text(
+            json.dumps(self.config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(self._config_file)
+
+    def _update_runtime_config(self, changes: dict[str, Any]) -> dict[str, Any]:
         merged = dict(self.config)
         for key in normalize_config({}):
             if key in changes:
@@ -55,12 +101,22 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         self.plugin_config = build_plugin_config(self.config)
         self.emotion_router = EmotionRouter(emotion_contexts=self.plugin_config.emotion_contexts)
         self._tts_sem = asyncio.Semaphore(self.plugin_config.max_concurrency)
+        persisted = {"local": False, "native": False, "warning": ""}
+        try:
+            self._persist_local_config()
+            persisted["local"] = True
+        except Exception as exc:
+            persisted["warning"] = f"failed to persist local config: {exc}"
+            self.logger.warning("[mimo-tts] failed to persist local config: %s", exc)
         if self._native_config is not None:
             try:
                 self._native_config.update(self.config)
                 self._native_config.save_config()
+                persisted["native"] = True
             except Exception as exc:
+                persisted["warning"] = f"failed to persist native config: {exc}"
                 self.logger.warning("[mimo-tts] failed to persist native config: %s", exc)
+        return persisted
 
     def _client(self) -> MimoOfficialClient:
         return MimoOfficialClient(

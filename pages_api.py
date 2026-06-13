@@ -54,8 +54,20 @@ class PagesAPIMixin:
         data = await request.get_json(force=True) or {}
         if not isinstance(data, dict):
             return jsonify({"success": False, "error": "Invalid JSON payload"}), 400
-        self._update_runtime_config(data)
-        return jsonify({"success": True, "config": dict(self.config)})
+        persisted = self._update_runtime_config(data)
+        if not persisted.get("local") and not persisted.get("native"):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "配置保存失败：无法写入 AstrBot 配置或插件本地配置文件。",
+                    "detail": persisted.get("warning") or "",
+                }
+            ), 500
+        response = {"success": True, "config": dict(self.config), "persisted": persisted}
+        if persisted.get("warning"):
+            response["warning"] = "配置已保存到插件本地文件，但 AstrBot 原生配置同步失败。"
+            response["detail"] = persisted["warning"]
+        return jsonify(response)
 
     async def _pages_list_voices(self):
         return jsonify(self._pages_payload())
@@ -180,8 +192,41 @@ class PagesAPIMixin:
         tts_context = self._build_tts_context(voice, emotion, command_context)
         try:
             output_path = await self._synthesize_text_to_file(text, voice, context=tts_context)
+        except AudioValidationError as exc:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": f"参考音频不可用：{exc}",
+                    "detail": str(exc),
+                }
+            ), 400
+        except RuntimeError as exc:
+            message = str(exc)
+            if "API Key" in message:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "MiMo API Key 未配置或未成功保存，请先在页面顶部保存配置。",
+                        "detail": message,
+                    }
+                ), 400
+            if "文本过长" in message or "鏂囨湰杩囬暱" in message:
+                return jsonify({"success": False, "error": message, "detail": message}), 400
+            return jsonify(
+                {
+                    "success": False,
+                    "error": f"MiMo 试听生成失败：{message}",
+                    "detail": message,
+                }
+            ), 502
         except Exception as exc:
-            return jsonify({"success": False, "error": str(exc)}), 500
+            return jsonify(
+                {
+                    "success": False,
+                    "error": f"试听生成异常：{exc}",
+                    "detail": str(exc),
+                }
+            ), 502
         raw = await asyncio.to_thread(pathlib.Path(output_path).read_bytes)
         return jsonify(
             {

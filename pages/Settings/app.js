@@ -61,6 +61,14 @@ function toast(message, type = 'ok') {
   el._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
+function extractErrorMessage(error, fallback = '操作失败') {
+  const data = error && error.response && error.response.data;
+  if (data && data.error) return data.error;
+  if (data && data.message) return data.message;
+  if (error && error.data && error.data.error) return error.data.error;
+  return String((error && error.message) || error || fallback);
+}
+
 function setActionState(message, type = 'idle') {
   const el = $('save-state');
   el.textContent = message;
@@ -102,7 +110,7 @@ async function runAction(button, busyText, handler) {
   try {
     await handler();
   } catch (error) {
-    toast(String(error.message || error), 'err');
+    toast(extractErrorMessage(error), 'err');
   } finally {
     setBusy(button, false);
     updateActionAvailability();
@@ -297,6 +305,11 @@ async function saveConfig() {
   state.config = res.config || state.config;
   updateStatus();
   markClean();
+  if (res.warning) {
+    setActionState('配置已保存到插件本地文件', 'is-dirty');
+    toast(res.warning, 'warn');
+    return;
+  }
   toast('配置已保存');
 }
 
@@ -419,12 +432,17 @@ async function preview() {
   if (!text) throw new Error('请输入试听文本');
   if (!voiceId) throw new Error('请选择音色');
 
-  const res = await bridge.apiPost('synthesize_preview', {
-    text,
-    voice_id: voiceId,
-    emotion: $('preview-emotion').value,
-    context: $('preview-context').value,
-  });
+  let res;
+  try {
+    res = await bridge.apiPost('synthesize_preview', {
+      text,
+      voice_id: voiceId,
+      emotion: $('preview-emotion').value,
+      context: $('preview-context').value,
+    });
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, '试听失败'));
+  }
   if (!res.success || !res.audio_data) throw new Error(res.error || '试听失败');
 
   $('preview-audio').src = res.audio_data;
@@ -488,7 +506,7 @@ async function init() {
     try {
       await voiceAction(button.dataset.action, button.dataset.id);
     } catch (error) {
-      toast(String(error.message || error), 'err');
+      toast(extractErrorMessage(error), 'err');
     }
   });
 
@@ -498,11 +516,11 @@ async function init() {
     try {
       await setEmotionDefault(select.dataset.emotion, select.value);
     } catch (error) {
-      toast(String(error.message || error), 'err');
+      toast(extractErrorMessage(error), 'err');
     }
   });
 
   await refresh();
 }
 
-init().catch(error => toast(String(error.message || error), 'err'));
+init().catch(error => toast(extractErrorMessage(error), 'err'));
