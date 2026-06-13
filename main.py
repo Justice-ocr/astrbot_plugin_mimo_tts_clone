@@ -261,6 +261,79 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             for segment in segments
         ]
 
+    async def text_to_speech(
+        self,
+        text: str,
+        *,
+        emotion: str = "",
+        target_umo: str = "",
+        session: str = "",
+        session_id: str = "",
+        voice: str = "",
+        voice_name: str = "",
+        context: str = "",
+        session_state: Any = None,
+    ) -> str:
+        """Compatibility helper for generic TTS callers such as daily_sharing."""
+        del session_state
+        group_id = str(target_umo or session or session_id or "").strip()
+        outputs = await self.synthesize_text(
+            text,
+            voice_name=voice_name or voice or None,
+            emotion=emotion or None,
+            context=context,
+            group_id=group_id,
+        )
+        return str(outputs[0]) if outputs else ""
+
+    if hasattr(filter, "llm_tool"):
+
+        @filter.llm_tool(name="mimo_tts_speak")
+        async def mimo_tts_speak(
+            self,
+            event: AstrMessageEvent,
+            text: str,
+            emotion: str = "neutral",
+            voice: str = "",
+            context: str = "",
+        ):
+            """Generate and send MiMo TTS voice audio.
+
+            Args:
+                text(string): Text that should be converted to speech.
+                emotion(string): Optional emotion, one of happy, sad, angry, neutral.
+                voice(string): Optional voice name or voice id.
+                context(string): Optional temporary style instruction.
+
+            Returns:
+                string: Generated audio path or a short failure message.
+            """
+            content = str(text or "").strip()
+            if not content:
+                yield "empty text"
+                return
+            try:
+                outputs = await self.synthesize_text(
+                    content,
+                    voice_name=str(voice or "").strip() or None,
+                    emotion=emotion,
+                    context=context,
+                    user_id=str(getattr(event, "get_sender_id", lambda: "")() or "").strip(),
+                    group_id=str(getattr(event, "unified_msg_origin", "") or "").strip()
+                    or self._conversation_id(event),
+                )
+            except Exception as exc:
+                yield f"tts failed: {exc}"
+                return
+            sent = 0
+            for output in outputs:
+                await self._send_audio_result(event, output)
+                sent += 1
+            if hasattr(event, "clear_result"):
+                event.clear_result()
+            yield str(outputs[0]) if outputs else f"sent {sent} audio"
+            return
+
     @staticmethod
     def _conversation_id(event: AstrMessageEvent) -> str:
         try:

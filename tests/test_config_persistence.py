@@ -1,4 +1,5 @@
 import importlib
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -60,6 +61,7 @@ def _install_astrbot_stubs():
     event.AstrMessageEvent = object
     event.filter = types.SimpleNamespace(
         command=_command_decorator,
+        llm_tool=_command_decorator,
         on_decorating_result=_command_decorator,
     )
 
@@ -192,6 +194,31 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertTrue(mid.exists())
             self.assertTrue(new.exists())
+
+    def test_text_to_speech_returns_first_output_path_for_generic_callers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+
+            async def fake_synthesize_text(text, **kwargs):
+                self.assertEqual(text, "hello")
+                self.assertEqual(kwargs["emotion"], "happy")
+                self.assertEqual(kwargs["group_id"], "aiocqhttp:FriendMessage:123")
+                return [Path(tmp) / "voice.wav"]
+
+            plugin.synthesize_text = fake_synthesize_text
+            result = asyncio.run(
+                plugin.text_to_speech(
+                    "hello",
+                    emotion="happy",
+                    target_umo="aiocqhttp:FriendMessage:123",
+                )
+            )
+
+            self.assertEqual(result, str(Path(tmp) / "voice.wav"))
+
+    def test_mimo_tts_speak_llm_tool_is_available_when_supported(self):
+        self.assertTrue(hasattr(self.module.MimoTTSClonePlugin, "mimo_tts_speak"))
 
 
 if __name__ == "__main__":

@@ -144,9 +144,19 @@ outputs = await plugin.synthesize_text(
 
 voices = plugin.list_available_voices()
 voice_id = plugin.resolve_voice_id("温柔旁白", user_id="123", group_id="456")
+audio_path = await plugin.text_to_speech(
+    "晚上好，欢迎回来。",
+    emotion="happy",
+    target_umo="aiocqhttp:FriendMessage:123",
+)
 ```
 
 这些方法会复用同一套清洗、情绪解析、默认音色优先级、分段和输出清理逻辑。
+
+如果配合 `astrbot_plugin_daily_sharing` 使用，可以在每日分享 Pages 里选择语音 provider：
+
+- `calibrated_tool`：点击“校准语音”，让每日分享自动命中本插件的 `mimo_tts_speak` LLM 工具。
+- `generic_plugin`：手动配置插件名 `astrbot_plugin_mimo_tts_clone`，方法路径 `text_to_speech`，文本参数 `text`，结果字段留空即可。
 
 ## 插件信息
 
