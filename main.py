@@ -169,7 +169,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
     @staticmethod
     def _tail(message: str, command: str) -> str:
         text = str(message or "").strip()
-        for prefix in ("/", "!", "！", ".", "。"):
+        for prefix in ("", "/", "!", "！", ".", "。"):
             token = f"{prefix}{command}"
             if text.startswith(token):
                 return text[len(token) :].strip()

@@ -126,6 +126,13 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertEqual(plugin.config["api_key"], "from-native-get")
             self.assertEqual(plugin.config["max_text_chars"], 222)
 
+    def test_tts_tail_strips_prefixed_and_bare_command_names(self):
+        plugin_cls = self.module.MimoTTSClonePlugin
+
+        self.assertEqual(plugin_cls._tail_any("/tts 晚上好", ("tts", "朗读", "语音")), "晚上好")
+        self.assertEqual(plugin_cls._tail_any("tts 晚上好", ("tts", "朗读", "语音")), "晚上好")
+        self.assertEqual(plugin_cls._tail_any("朗读 晚上好", ("tts", "朗读", "语音")), "晚上好")
+
 
 if __name__ == "__main__":
     unittest.main()
