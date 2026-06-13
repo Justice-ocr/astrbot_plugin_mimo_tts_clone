@@ -15,6 +15,7 @@
         <p>用官方 voiceclone API 管理授权音色、情绪路由、风格指令和试听工作流。</p>
         <div class="hero-actions">
           <button id="save-config" class="primary">保存配置</button>
+          <span id="save-state" class="action-state">配置已同步</span>
           <a class="ghost-link" href="https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/speech-synthesis-v2.5" target="_blank" rel="noreferrer">查看 MiMo 文档</a>
         </div>
       </div>
@@ -105,6 +106,7 @@ output: non-streaming wav</code></pre>
           <button id="upload-voice" class="primary">上传音色</button>
         </div>
       </div>
+      <p id="upload-hint" class="field-hint">上传前请确认样本已获授权；建议使用清晰、无背景噪音的 mp3 / wav 音频。</p>
       <div id="voice-list" class="voice-list"></div>
     </section>
 

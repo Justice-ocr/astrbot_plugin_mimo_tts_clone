@@ -50,6 +50,7 @@ async function resolveBridge() {
 }
 
 let state = { config: {}, voices: [], defaults: {}, emotions: ['happy', 'sad', 'angry', 'neutral'] };
+let lastUploadedVoiceId = '';
 
 function toast(message, type = 'ok') {
   const el = $('toast');
@@ -58,6 +59,54 @@ function toast(message, type = 'ok') {
   el.style.display = 'block';
   clearTimeout(el._timer);
   el._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+function setActionState(message, type = 'idle') {
+  const el = $('save-state');
+  el.textContent = message;
+  el.className = `action-state ${type}`;
+}
+
+function markDirty() {
+  setActionState('有未保存更改', 'is-dirty');
+}
+
+function markClean() {
+  setActionState('配置已同步', 'is-clean');
+}
+
+function setUploadHint(message, type = 'info') {
+  const el = $('upload-hint');
+  el.textContent = message;
+  el.className = `field-hint ${type}`;
+}
+
+function setBusy(button, busy, busyText = '处理中...') {
+  if (!button) return;
+  if (busy) {
+    button.dataset.idleText = button.textContent;
+    button.textContent = busyText;
+    button.disabled = true;
+    button.classList.add('is-busy');
+    button.setAttribute('aria-busy', 'true');
+    return;
+  }
+  button.textContent = button.dataset.idleText || button.textContent;
+  button.disabled = false;
+  button.classList.remove('is-busy');
+  button.removeAttribute('aria-busy');
+}
+
+async function runAction(button, busyText, handler) {
+  setBusy(button, true, busyText);
+  try {
+    await handler();
+  } catch (error) {
+    toast(String(error.message || error), 'err');
+  } finally {
+    setBusy(button, false);
+    updateActionAvailability();
+  }
 }
 
 function escapeHtml(value) {
@@ -107,6 +156,26 @@ function updateStatus() {
   $('hero-voice-count').textContent = String(state.voices.length);
 }
 
+function updateActionAvailability() {
+  const uploadFile = $('voice-file').files[0];
+  const hasName = Boolean($('voice-name').value.trim());
+  const hasConsent = $('voice-consent').checked;
+  $('upload-voice').disabled = !(uploadFile && hasName && hasConsent);
+
+  if (!uploadFile) {
+    setUploadHint('先选择一段已授权的 mp3 / wav 参考音频。');
+  } else if (!hasName) {
+    setUploadHint('请填写音色名称，方便后续在指令和情绪路由里识别。', 'warn');
+  } else if (!hasConsent) {
+    setUploadHint('请确认已获得声音使用授权后再上传。', 'warn');
+  } else {
+    setUploadHint('准备就绪，点击上传后会自动加入音色库并选中用于试听。', 'ok');
+  }
+
+  const canPreview = Boolean(state.voices.length && $('preview-text').value.trim() && $('preview-voice').value);
+  $('preview-btn').disabled = !canPreview;
+}
+
 function applyState(payload) {
   state.config = payload.config || {};
   state.voices = payload.voices || [];
@@ -130,6 +199,8 @@ function applyState(payload) {
   updateStatus();
   renderEmotionDefaults();
   renderVoices();
+  markClean();
+  updateActionAvailability();
 }
 
 function renderEmotionDefaults() {
@@ -207,6 +278,11 @@ function renderVoices() {
     option.textContent = voice.name;
     select.appendChild(option);
   });
+  if (lastUploadedVoiceId && state.voices.some(voice => voice.id === lastUploadedVoiceId)) {
+    select.value = lastUploadedVoiceId;
+    lastUploadedVoiceId = '';
+  }
+  updateActionAvailability();
 }
 
 async function refresh() {
@@ -220,20 +296,33 @@ async function saveConfig() {
   if (!res.success) throw new Error(res.error || '保存失败');
   state.config = res.config || state.config;
   updateStatus();
+  markClean();
   toast('配置已保存');
 }
 
-async function uploadVoice() {
+function validateVoiceUpload() {
   const file = $('voice-file').files[0];
+  const name = $('voice-name').value.trim();
   if (!file) throw new Error('请选择音频文件');
+  if (!/\.(mp3|wav)$/i.test(file.name)) throw new Error('只支持 mp3 / wav 音频');
+  if (file.size > Number($('max-voice-file-mb').value || 10) * 1024 * 1024) {
+    throw new Error('音频文件超过大小限制');
+  }
+  if (!name) throw new Error('请填写音色名称');
   if (!$('voice-consent').checked) throw new Error('请先确认已获得声音使用授权');
+  return { file, name };
+}
+
+async function uploadVoice() {
+  const { file, name } = validateVoiceUpload();
 
   const res = await bridge.upload('upload_voice_sample', file);
   if (!res.success || !res.voice) throw new Error(res.error || '上传失败');
+  lastUploadedVoiceId = res.voice.id;
 
   await bridge.apiPost('update_voice', {
     voice_id: res.voice.id,
-    name: $('voice-name').value.trim() || res.voice.name,
+    name,
     description: $('voice-desc').value.trim(),
     emotion: $('voice-emotion').value,
     style_tags: $('voice-style-tags').value.trim(),
@@ -246,6 +335,7 @@ async function uploadVoice() {
   $('voice-emotion').value = '';
   $('voice-consent').checked = false;
   await refresh();
+  setUploadHint('音色已上传，并已自动选中用于试听。', 'ok');
   toast('音色已上传');
 }
 
@@ -294,22 +384,55 @@ async function preview() {
   toast(`试听生成成功，情绪：${res.emotion || 'neutral'}`);
 }
 
-function bind(id, handler) {
-  $(id).addEventListener('click', async () => {
-    try {
-      await handler();
-    } catch (error) {
-      toast(String(error.message || error), 'err');
-    }
+function bind(id, handler, busyText = '处理中...') {
+  $(id).addEventListener('click', event => {
+    runAction(event.currentTarget, busyText, handler);
+  });
+}
+
+function bindConfigDirtyState() {
+  [
+    'api-key',
+    'base-url',
+    'model',
+    'default-context',
+    'max-text-chars',
+    'max-concurrency',
+    'max-voice-file-mb',
+    'emotion-routing-enabled',
+    'segment-enabled',
+    'segment-threshold-chars',
+    'segment-max-segments',
+  ].forEach(id => {
+    const el = $(id);
+    el.addEventListener('input', markDirty);
+    el.addEventListener('change', markDirty);
+  });
+}
+
+function bindActionAvailability() {
+  [
+    'voice-file',
+    'voice-name',
+    'voice-consent',
+    'preview-voice',
+    'preview-text',
+  ].forEach(id => {
+    const el = $(id);
+    el.addEventListener('input', updateActionAvailability);
+    el.addEventListener('change', updateActionAvailability);
   });
 }
 
 async function init() {
   bridge = await resolveBridge();
   await bridge.ready();
-  bind('save-config', saveConfig);
-  bind('upload-voice', uploadVoice);
-  bind('preview-btn', preview);
+  bind('save-config', saveConfig, '保存中...');
+  bind('upload-voice', uploadVoice, '上传中...');
+  bind('preview-btn', preview, '生成中...');
+  bindConfigDirtyState();
+  bindActionAvailability();
+  updateActionAvailability();
 
   $('voice-list').addEventListener('click', async event => {
     const button = event.target.closest('button[data-action]');

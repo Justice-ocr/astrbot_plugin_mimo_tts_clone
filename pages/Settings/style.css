@@ -125,6 +125,29 @@ h1, h2, p { margin: 0; }
   text-decoration: none;
 }
 
+.action-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  border: 1px solid rgba(58, 43, 17, .12);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, .48);
+  color: var(--studio-muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.action-state.is-dirty {
+  border-color: rgba(247, 183, 49, .62);
+  background: rgba(255, 232, 169, .76);
+  color: #7a5206;
+}
+
+.action-state.is-clean {
+  color: var(--studio-green);
+}
+
 .hero-console {
   align-self: center;
   border: 1px solid rgba(255, 255, 255, .1);
@@ -268,6 +291,18 @@ button:hover {
   filter: brightness(1.02);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  filter: grayscale(.12);
+  opacity: .62;
+  transform: none;
+}
+
+button.is-busy {
+  position: relative;
+  color: rgba(42, 27, 2, .72);
+}
+
 button.primary {
   background: linear-gradient(135deg, #ffc84b, #f39b21);
   color: #2a1b02;
@@ -354,6 +389,22 @@ button.danger {
 
 .voice-upload-actions button {
   min-width: 128px;
+}
+
+.field-hint {
+  margin: -8px 0 18px;
+  color: var(--studio-muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.7;
+}
+
+.field-hint.warn {
+  color: #8d6110;
+}
+
+.field-hint.ok {
+  color: var(--studio-green);
 }
 
 .voice-list {

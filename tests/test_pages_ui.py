@@ -19,6 +19,8 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("upload-fields", html)
         self.assertIn("voice-upload-actions", html)
         self.assertIn("repeat(auto-fit", css)
+        self.assertIn("save-state", html)
+        self.assertIn("upload-hint", html)
 
     def test_settings_page_loads_astrbot_bridge_before_app(self):
         html = (PAGES_DIR / "index.html").read_text(encoding="utf-8")
@@ -48,3 +50,20 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("async function resolveBridge", js)
         self.assertIn("waitForAstrBotBridge", js)
         self.assertNotIn("const bridge = window.AstrBotPluginPage ||", js)
+
+    def test_settings_app_guides_user_actions(self):
+        js = (PAGES_DIR / "app.js").read_text(encoding="utf-8")
+        css = (PAGES_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("function markDirty", js)
+        self.assertIn("function setBusy", js)
+        self.assertIn("function validateVoiceUpload", js)
+        self.assertIn("function updateActionAvailability", js)
+        self.assertLess(js.index("updateActionAvailability();"), js.index("await refresh();"))
+        self.assertIn("lastUploadedVoiceId", js)
+        self.assertIn("请填写音色名称", js)
+        self.assertIn("只支持 mp3 / wav 音频", js)
+        self.assertIn("aria-busy", js)
+        self.assertIn("is-busy", css)
+        self.assertIn("is-dirty", css)
+        self.assertIn("field-hint", css)
