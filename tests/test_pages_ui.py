@@ -3,7 +3,7 @@ import unittest
 
 
 PAGES_DIR = Path(__file__).resolve().parents[1] / "pages" / "Settings"
-MOJIBAKE_MARKERS = ("闂", "閹", "鐠", "姒", "閸", "娑", "缁", "閺")
+MOJIBAKE_MARKERS = ("闂", "闁", "閻", "濮", "閸", "濞", "缂", "閺")
 
 
 class PagesUITests(unittest.TestCase):
@@ -16,6 +16,9 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("studio-hero", html)
         self.assertIn("--studio-gold", css)
         self.assertIn("radial-gradient", css)
+        self.assertIn("upload-fields", html)
+        self.assertIn("voice-upload-actions", html)
+        self.assertIn("repeat(auto-fit", css)
 
     def test_settings_frontend_copy_is_not_mojibake(self):
         combined = "\n".join(
@@ -27,3 +30,5 @@ class PagesUITests(unittest.TestCase):
             self.assertNotIn(marker, combined)
         self.assertIn("自动", combined)
         self.assertIn("未设置", combined)
+        self.assertIn("请在 AstrBot 插件管理页中打开", combined)
+        self.assertNotIn("AstrBot Pages bridge unavailable", combined)

@@ -90,16 +90,20 @@ output: non-streaming wav</code></pre>
         <span id="voice-count" class="soft-pill">0 个音色</span>
       </div>
       <div class="upload-row">
-        <input id="voice-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" />
-        <input id="voice-name" type="text" placeholder="音色名称" />
-        <input id="voice-desc" type="text" placeholder="说明" />
-        <select id="voice-emotion">
-          <option value="">建议情绪</option>
-        </select>
-        <input id="voice-style-tags" type="text" placeholder="MiMo 标签，如 [whisper]" />
-        <input id="voice-style-context" type="text" placeholder="音色风格指令" />
-        <label class="studio-switch consent"><input id="voice-consent" type="checkbox" /><span>已获授权</span></label>
-        <button id="upload-voice">上传音色</button>
+        <div class="upload-fields">
+          <input id="voice-file" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" />
+          <input id="voice-name" type="text" placeholder="音色名称" />
+          <input id="voice-desc" type="text" placeholder="说明" />
+          <select id="voice-emotion">
+            <option value="">建议情绪</option>
+          </select>
+          <input id="voice-style-tags" type="text" placeholder="MiMo 标签，如 [whisper]" />
+          <input id="voice-style-context" type="text" placeholder="音色风格指令" />
+        </div>
+        <div class="voice-upload-actions">
+          <label class="studio-switch consent"><input id="voice-consent" type="checkbox" /><span>已获授权</span></label>
+          <button id="upload-voice" class="primary">上传音色</button>
+        </div>
       </div>
       <div id="voice-list" class="voice-list"></div>
     </section>

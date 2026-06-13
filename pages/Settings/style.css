@@ -321,16 +321,45 @@ button.danger {
 
 .upload-row {
   display: grid;
-  grid-template-columns: 1.1fr .8fr .9fr .75fr .95fr .95fr auto auto;
-  gap: 10px;
-  margin-bottom: 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: end;
+  margin-bottom: 24px;
+  padding: 18px;
+  border: 1px solid rgba(58, 43, 17, .1);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(247, 183, 49, .14), transparent 30%),
+    rgba(255, 255, 255, .32);
+}
+
+.upload-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
   align-items: center;
+}
+
+.upload-fields input[type="file"] {
+  min-width: 240px;
+}
+
+.voice-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.voice-upload-actions button {
+  min-width: 128px;
 }
 
 .voice-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 22px;
 }
 
 .voice-card {
@@ -339,8 +368,8 @@ button.danger {
   gap: 14px;
   min-height: 168px;
   border: 1px solid rgba(58, 43, 17, .13);
-  border-radius: 24px;
-  padding: 18px;
+  border-radius: 28px;
+  padding: 22px;
   background:
     radial-gradient(circle at 86% 10%, rgba(247, 183, 49, .2), transparent 28%),
     linear-gradient(145deg, rgba(255,255,255,.72), rgba(255,246,225,.56));

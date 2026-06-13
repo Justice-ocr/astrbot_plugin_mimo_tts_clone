@@ -1,11 +1,12 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
+const BRIDGE_UNAVAILABLE_MESSAGE = '请在 AstrBot 插件管理页中打开本页面。普通浏览器预览只能查看 UI，不能上传、保存或试听。';
 const bridge = window.AstrBotPluginPage || {
   ready: async () => ({}),
-  apiGet: async () => ({ success: false, error: 'AstrBot Pages bridge unavailable' }),
-  apiPost: async () => ({ success: false, error: 'AstrBot Pages bridge unavailable' }),
-  upload: async () => ({ success: false, error: 'AstrBot Pages bridge unavailable' }),
+  apiGet: async () => ({ success: false, error: BRIDGE_UNAVAILABLE_MESSAGE }),
+  apiPost: async () => ({ success: false, error: BRIDGE_UNAVAILABLE_MESSAGE }),
+  upload: async () => ({ success: false, error: BRIDGE_UNAVAILABLE_MESSAGE }),
 };
 
 let state = { config: {}, voices: [], defaults: {}, emotions: ['happy', 'sad', 'angry', 'neutral'] };
