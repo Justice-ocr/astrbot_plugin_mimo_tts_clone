@@ -558,6 +558,10 @@ audio { width: 100%; }
   background: #7e2e28;
 }
 
+.toast.warn {
+  background: #8d6110;
+}
+
 @media (max-width: 980px) {
   .studio-hero,
   .status-grid,

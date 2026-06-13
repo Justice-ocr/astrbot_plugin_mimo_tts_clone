@@ -313,6 +313,17 @@ function validateVoiceUpload() {
   return { file, name };
 }
 
+function voiceMetadataPayload(name) {
+  return {
+    name,
+    description: $('voice-desc').value.trim(),
+    emotion: $('voice-emotion').value,
+    style_tags: $('voice-style-tags').value.trim(),
+    style_context: $('voice-style-context').value.trim(),
+    consent_confirmed: $('voice-consent').checked ? 'true' : 'false',
+  };
+}
+
 function readFileAsBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -325,7 +336,7 @@ function readFileAsBase64(file) {
   });
 }
 
-async function uploadVoiceSample(file) {
+async function uploadVoiceSample(file, metadata) {
   try {
     return await bridge.upload('upload_voice_sample', file);
   } catch (error) {
@@ -334,34 +345,46 @@ async function uploadVoiceSample(file) {
     return await bridge.apiPost('upload_voice_sample_json', {
       filename: file.name,
       audio_base64: audioBase64,
+      ...metadata,
     });
   }
 }
 
+async function syncVoiceMetadata(voiceId, metadata) {
+  const res = await bridge.apiPost('update_voice', {
+    voice_id: voiceId,
+    ...metadata,
+  });
+  if (!res.success) throw new Error(res.error || '元数据同步失败');
+}
+
 async function uploadVoice() {
   const { file, name } = validateVoiceUpload();
+  const metadata = voiceMetadataPayload(name);
 
-  const res = await uploadVoiceSample(file);
+  const res = await uploadVoiceSample(file, metadata);
   if (!res.success || !res.voice) throw new Error(res.error || '上传失败');
   lastUploadedVoiceId = res.voice.id;
 
-  await bridge.apiPost('update_voice', {
-    voice_id: res.voice.id,
-    name,
-    description: $('voice-desc').value.trim(),
-    emotion: $('voice-emotion').value,
-    style_tags: $('voice-style-tags').value.trim(),
-    style_context: $('voice-style-context').value.trim(),
-  });
+  try {
+    await syncVoiceMetadata(res.voice.id, metadata);
+  } catch (error) {
+    toast(`音色已上传，但元数据同步失败：${error.message || error}`, 'warn');
+  }
 
   ['voice-file', 'voice-name', 'voice-desc', 'voice-style-tags', 'voice-style-context'].forEach(id => {
     $(id).value = '';
   });
   $('voice-emotion').value = '';
   $('voice-consent').checked = false;
-  await refresh();
-  setUploadHint('音色已上传，并已自动选中用于试听。', 'ok');
-  toast('音色已上传');
+  try {
+    await refresh();
+    setUploadHint('音色已上传，并已自动选中用于试听。', 'ok');
+    toast('音色已上传');
+  } catch (error) {
+    setUploadHint('音色已上传，但刷新列表失败；请手动刷新页面查看。', 'warn');
+    toast(`音色已上传，但刷新列表失败：${error.message || error}`, 'warn');
+  }
 }
 
 async function voiceAction(action, id) {
