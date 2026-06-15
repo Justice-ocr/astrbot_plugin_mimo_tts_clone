@@ -105,3 +105,17 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("is-dirty", css)
         self.assertIn("field-hint", css)
         self.assertIn("readiness-item", css)
+
+    def test_settings_css_keeps_large_cards_stable_on_hover(self):
+        css = (PAGES_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertNotIn(".workflow-strip article:hover,\n.studio-card:hover", css)
+        self.assertIn('input:not([type="checkbox"]):not([type="radio"]):not([type="file"])', css)
+        self.assertRegex(css, r"\.studio-card\s*\{[^}]*isolation:\s*isolate;")
+        self.assertRegex(css, r"\.studio-card::before\s*\{[^}]*z-index:\s*0;")
+        self.assertRegex(css, r"\.studio-card > \*\s*\{[^}]*z-index:\s*1;")
+        self.assertRegex(css, r"\.studio-card:hover\s*\{[^}]*box-shadow:")
+        self.assertRegex(css, r"\.studio-switch input\s*\{[^}]*width:\s*16px;")
+        self.assertRegex(css, r"\.studio-switch input\s*\{[^}]*transition:\s*none;")
+        studio_hover = css.split(".studio-card:hover", 1)[1].split("}", 1)[0]
+        self.assertNotIn("transform", studio_hover)

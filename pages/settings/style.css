@@ -46,6 +46,12 @@ body {
   overflow-x: hidden;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body::before,
 body::after {
   content: "";
@@ -129,6 +135,7 @@ p { margin: 0; }
 
 .studio-hero {
   position: relative;
+  isolation: isolate;
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(310px, .8fr);
   gap: 22px;
@@ -148,6 +155,7 @@ p { margin: 0; }
     radial-gradient(circle at 74% 12%, rgba(102,183,168,.22), transparent 26%),
     linear-gradient(135deg, rgba(255,255,255,.72), rgba(241,251,247,.54));
   z-index: -1;
+  pointer-events: none;
 }
 
 .studio-hero::after {
@@ -162,6 +170,8 @@ p { margin: 0; }
     linear-gradient(135deg, rgba(102,183,168,.28), rgba(232,189,98,.22)),
     repeating-linear-gradient(90deg, rgba(255,255,255,.32) 0 6px, transparent 6px 14px);
   transform: rotate(-14deg);
+  z-index: -1;
+  pointer-events: none;
 }
 
 .hero-copy {
@@ -326,8 +336,7 @@ p { margin: 0; }
   transition: transform .2s var(--ease), box-shadow .2s var(--ease);
 }
 
-.workflow-strip article:hover,
-.studio-card:hover {
+.workflow-strip article:hover {
   transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
 }
@@ -419,10 +428,11 @@ p { margin: 0; }
 
 .studio-card {
   position: relative;
+  isolation: isolate;
   margin-bottom: 18px;
   border-radius: var(--radius-xl);
   padding: 24px;
-  transition: transform .2s var(--ease), box-shadow .2s var(--ease), border-color .2s var(--ease);
+  transition: box-shadow .2s var(--ease), border-color .2s var(--ease), background .2s var(--ease);
   overflow: hidden;
 }
 
@@ -430,10 +440,16 @@ p { margin: 0; }
   content: "";
   position: absolute;
   inset: 0;
+  z-index: 0;
   pointer-events: none;
   background:
     linear-gradient(135deg, rgba(255,255,255,.62), transparent 42%),
     radial-gradient(circle at 100% 0%, rgba(102,183,168,.1), transparent 28%);
+}
+
+.studio-card:hover {
+  border-color: rgba(102,183,168,.2);
+  box-shadow: var(--shadow-soft);
 }
 
 .studio-card > * {
@@ -474,7 +490,7 @@ label {
   font-weight: 850;
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
 textarea,
 select {
   width: 100%;
@@ -489,14 +505,14 @@ select {
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease), transform .18s var(--ease);
 }
 
-input:hover,
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover,
 textarea:hover,
 select:hover {
   border-color: var(--line-strong);
   background: rgba(255,255,255,.86);
 }
 
-input:focus,
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 textarea:focus,
 select:focus {
   border-color: rgba(102, 183, 168, .8);
@@ -575,8 +591,23 @@ button.danger {
 }
 
 .studio-switch input {
-  width: auto;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  outline: none;
   accent-color: var(--primary);
+  transform: none;
+  transition: none;
+}
+
+.studio-switch input:focus-visible {
+  outline: 3px solid rgba(102, 183, 168, .24);
+  outline-offset: 3px;
 }
 
 .switch-stack {
@@ -619,6 +650,7 @@ button.danger {
 
 .drop-zone {
   position: relative;
+  isolation: isolate;
   display: grid;
   place-items: center;
   align-content: center;
@@ -691,6 +723,7 @@ button.danger {
 
 .voice-card {
   position: relative;
+  isolation: isolate;
   display: grid;
   gap: 14px;
   min-height: 176px;
@@ -720,6 +753,8 @@ button.danger {
   opacity: .26;
   background: repeating-linear-gradient(90deg, var(--leaf) 0 5px, transparent 5px 10px);
   mask-image: linear-gradient(180deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .voice-card.is-disabled { opacity: .56; }
