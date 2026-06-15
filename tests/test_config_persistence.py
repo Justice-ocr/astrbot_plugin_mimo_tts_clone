@@ -14,8 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 class _Logger:
+    def __init__(self):
+        self.infos = []
+        self.warnings = []
+
+    def info(self, *args, **kwargs):
+        self.infos.append(args)
+
     def warning(self, *args, **kwargs):
-        pass
+        self.warnings.append(args)
 
 
 class _Star:
@@ -147,6 +154,7 @@ class ConfigPersistenceTests(unittest.TestCase):
     def setUp(self):
         _install_astrbot_stubs()
         self.module = importlib.import_module("astrbot_plugin_mimo_tts_clone.main")
+        self.module.logger = _Logger()
 
     def test_pages_config_persists_locally_when_native_save_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -227,6 +235,7 @@ class ConfigPersistenceTests(unittest.TestCase):
                 "ai_style_director_max_chars": 12,
                 "ai_style_director_optimize_text": "on",
                 "ai_style_director_fallback_to_emotion": "off",
+                "ai_style_director_debug_log": "off",
             }
         )
 
@@ -237,6 +246,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.assertEqual(cfg["ai_style_director_max_chars"], 20)
         self.assertTrue(cfg["ai_style_director_optimize_text"])
         self.assertFalse(cfg["ai_style_director_fallback_to_emotion"])
+        self.assertFalse(cfg["ai_style_director_debug_log"])
 
     def test_runtime_config_migrates_legacy_file_fallback(self):
         from astrbot_plugin_mimo_tts_clone.core.config import normalize_config
@@ -342,6 +352,13 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertEqual(len(ctx.providers[0].calls), 1)
             self.assertIn("待朗读文本：晚上好，欢迎回来。", ctx.providers[0].calls[0]["prompt"])
             self.assertIn("请输出最终 JSON", ctx.providers[0].calls[0]["prompt"])
+            self.assertEqual(len(plugin.logger.infos), 1)
+            log_args = plugin.logger.infos[0]
+            log_text = log_args[0] % log_args[1:]
+            self.assertIn("[mimo-tts] AI导演", log_text)
+            self.assertIn("cached=false", log_text)
+            self.assertIn("style_context=", log_text)
+            self.assertIn("speech_text=", log_text)
 
     def test_ai_style_director_can_fail_hard_when_fallback_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:

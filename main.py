@@ -442,6 +442,14 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         cached = self._style_director_cache.get(cache_key)
         if cached:
             style_context, speech_text = cached
+            self._log_style_director_plan(
+                voice=voice,
+                emotion=emotion,
+                text=text,
+                style_context=style_context,
+                speech_text=speech_text or text,
+                cached=True,
+            )
             return self._merge_directed_context(base_context, style_context), speech_text or text
 
         directive = ""
@@ -472,8 +480,45 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
 
         if directive:
             self._style_director_cache[cache_key] = (directive, speech_text)
+            self._log_style_director_plan(
+                voice=voice,
+                emotion=emotion,
+                text=text,
+                style_context=directive,
+                speech_text=speech_text,
+                cached=False,
+            )
             return self._merge_directed_context(base_context, directive), speech_text
         return base_context, speech_text
+
+    def _log_style_director_plan(
+        self,
+        *,
+        voice: VoiceProfile,
+        emotion: str,
+        text: str,
+        style_context: str,
+        speech_text: str,
+        cached: bool,
+    ) -> None:
+        if not self.plugin_config.ai_style_director_debug_log:
+            return
+        self.logger.info(
+            "[mimo-tts] AI导演 provider=%s voice=%s(%s) emotion=%s cached=%s text=%s style_context=%s speech_text=%s",
+            self.plugin_config.ai_style_director_provider_id or "default",
+            self._clip_log_text(voice.name),
+            self._clip_log_text(voice.id),
+            self._clip_log_text(emotion or "neutral"),
+            str(bool(cached)).lower(),
+            self._clip_log_text(text),
+            self._clip_log_text(style_context),
+            self._clip_log_text(speech_text),
+        )
+
+    @staticmethod
+    def _clip_log_text(value: Any, limit: int = 160) -> str:
+        text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+        return text if len(text) <= limit else f"{text[:limit].rstrip()}..."
 
     def _merge_directed_context(self, base_context: str, directive: str) -> str:
         if self.plugin_config.ai_style_director_mode == "direct":

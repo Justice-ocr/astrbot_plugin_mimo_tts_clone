@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ai_style_director_max_chars": 120,
     "ai_style_director_optimize_text": True,
     "ai_style_director_fallback_to_emotion": True,
+    "ai_style_director_debug_log": True,
     "segment_enabled": True,
     "segment_threshold_chars": 180,
     "segment_max_segments": 6,
@@ -61,6 +62,7 @@ class PluginConfig:
     ai_style_director_max_chars: int
     ai_style_director_optimize_text: bool
     ai_style_director_fallback_to_emotion: bool
+    ai_style_director_debug_log: bool
     segment_enabled: bool
     segment_threshold_chars: int
     segment_max_segments: int
@@ -127,6 +129,9 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     )
     cfg["ai_style_director_fallback_to_emotion"] = _bool_value(
         cfg.get("ai_style_director_fallback_to_emotion", True)
+    )
+    cfg["ai_style_director_debug_log"] = _bool_value(
+        cfg.get("ai_style_director_debug_log", True)
     )
     cfg["segment_enabled"] = _bool_value(cfg.get("segment_enabled", True))
     cfg["segment_threshold_chars"] = _int_at_least(cfg.get("segment_threshold_chars"), 180, 1)

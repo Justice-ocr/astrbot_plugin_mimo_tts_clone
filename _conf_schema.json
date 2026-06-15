@@ -102,6 +102,12 @@
     "hint": "开启后，LLM 生成风格失败时仍使用默认风格、情绪风格和音色风格继续合成；关闭后会中断本次合成并提示错误。",
     "default": true
   },
+  "ai_style_director_debug_log": {
+    "type": "bool",
+    "description": "输出 AI 导演调试日志",
+    "hint": "开启后会在 AstrBot 日志输出 provider、音色、情绪、原文摘要、隐藏风格指令和实际朗读文本摘要；不会输出 API Key 或音频内容。",
+    "default": true
+  },
   "segment_enabled": {
     "type": "bool",
     "description": "启用长文本分段合成",

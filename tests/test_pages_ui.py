@@ -26,6 +26,7 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("save-state", html)
         self.assertIn("upload-hint", html)
         self.assertIn("ai-style-director-provider-select", html)
+        self.assertIn("ai-style-director-debug-log", html)
 
     def test_settings_page_loads_astrbot_bridge_before_app(self):
         html = (PAGES_DIR / "index.html").read_text(encoding="utf-8")
@@ -80,6 +81,7 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("function renderProviderSelect", js)
         self.assertIn("function bindProviderSelect", js)
         self.assertIn("ai_style_director_provider_id", js)
+        self.assertIn("ai_style_director_debug_log", js)
         self.assertLess(js.index("updateActionAvailability();"), js.index("await refresh();"))
         self.assertIn("lastUploadedVoiceId", js)
         self.assertIn("请填写音色名称", js)

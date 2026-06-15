@@ -148,6 +148,7 @@ function configPayload() {
     ai_style_director_max_chars: Number($('ai-style-director-max-chars').value || 120),
     ai_style_director_optimize_text: $('ai-style-director-optimize-text').checked,
     ai_style_director_fallback_to_emotion: $('ai-style-director-fallback').checked,
+    ai_style_director_debug_log: $('ai-style-director-debug-log').checked,
     segment_enabled: $('segment-enabled').checked,
     segment_threshold_chars: Number($('segment-threshold-chars').value || 180),
     segment_max_segments: Number($('segment-max-segments').value || 6),
@@ -253,6 +254,7 @@ function applyState(payload) {
   $('ai-style-director-max-chars').value = state.config.ai_style_director_max_chars || 120;
   $('ai-style-director-optimize-text').checked = state.config.ai_style_director_optimize_text !== false;
   $('ai-style-director-fallback').checked = state.config.ai_style_director_fallback_to_emotion !== false;
+  $('ai-style-director-debug-log').checked = state.config.ai_style_director_debug_log !== false;
   $('segment-enabled').checked = state.config.segment_enabled !== false;
   $('segment-threshold-chars').value = state.config.segment_threshold_chars || 180;
   $('segment-max-segments').value = state.config.segment_max_segments || 6;
@@ -561,6 +563,7 @@ function bindConfigDirtyState() {
     'ai-style-director-max-chars',
     'ai-style-director-optimize-text',
     'ai-style-director-fallback',
+    'ai-style-director-debug-log',
     'segment-enabled',
     'segment-threshold-chars',
     'segment-max-segments',

@@ -136,6 +136,7 @@
         <label>最大指令长度<input id="ai-style-director-max-chars" type="number" min="20" max="300" /></label>
         <label class="studio-switch"><input id="ai-style-director-optimize-text" type="checkbox" /><span>优化音频朗读文本，剔除口头填充并加入自然停顿</span></label>
         <label class="studio-switch"><input id="ai-style-director-fallback" type="checkbox" /><span>AI 失败时回退到情绪/默认风格</span></label>
+        <label class="studio-switch"><input id="ai-style-director-debug-log" type="checkbox" /><span>在日志中显示 AI 导演结果</span></label>
       </div>
       <label class="wide">导演提示词模板<textarea id="ai-style-director-prompt" rows="4" placeholder="留空使用内置模板。可用变量：{max_chars}。建议输出 JSON：style_context + speech_text"></textarea></label>
       <p class="field-hint">发送前 AI 导演会生成给 MiMo 的隐藏 user 风格指令；开启文本优化时，还会生成仅用于音频朗读的 speech_text。最终聊天文字保持原样，不会被改写。</p>
