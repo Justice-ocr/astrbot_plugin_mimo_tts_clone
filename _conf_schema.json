@@ -62,19 +62,25 @@
   },
   "ai_style_director_enabled": {
     "type": "bool",
-    "description": "启用 AI 风格导演",
-    "hint": "开启后，会先让当前 AstrBot LLM 根据待朗读文本生成一段 MiMo 自然语言风格控制指令。该指令只作为 MiMo user 消息，不会出现在最终回复文本中。",
+    "description": "启用发送前 AI 导演",
+    "hint": "开启后，会先让 AstrBot LLM 为音频生成隐藏风格指令，并可优化只用于朗读的文本。不会改变最终回复给用户的文字。",
     "default": false
+  },
+  "ai_style_director_provider_id": {
+    "type": "string",
+    "description": "AI 导演服务商 ID",
+    "hint": "填写 AstrBot AI 服务商 ID 时，将优先使用该服务商生成音频导演方案；留空则使用当前默认 LLM。",
+    "default": ""
   },
   "ai_style_director_prompt": {
     "type": "string",
-    "description": "AI 风格导演提示词模板",
-    "hint": "留空使用内置模板。可用变量：{max_chars}。请要求模型只输出语气、节奏、场景感等风格描述，不要复述正文。",
+    "description": "AI 导演提示词模板",
+    "hint": "留空使用内置模板。可用变量：{max_chars}。建议要求模型输出 JSON，包含 style_context 和 speech_text。",
     "default": ""
   },
   "ai_style_director_mode": {
     "type": "string",
-    "description": "AI 风格导演模式",
+    "description": "AI 导演风格模式",
     "options": ["direct", "hybrid"],
     "hint": "direct=仅使用 AI 生成的风格指令；hybrid=保留默认/情绪/音色/临时风格并追加 AI 指令。两者都不会污染最终回复文本。",
     "default": "direct"
@@ -84,9 +90,15 @@
     "description": "AI 风格指令最大长度",
     "default": 120
   },
+  "ai_style_director_optimize_text": {
+    "type": "bool",
+    "description": "允许 AI 优化朗读文本",
+    "hint": "开启后，AI 可在不改变原意的前提下剔除无意义语气词、整理重复口头禅，并加入更自然的标点停顿。只影响音频，不影响最终文字回复。",
+    "default": true
+  },
   "ai_style_director_fallback_to_emotion": {
     "type": "bool",
-    "description": "AI 风格导演失败时回退",
+    "description": "AI 导演失败时回退",
     "hint": "开启后，LLM 生成风格失败时仍使用默认风格、情绪风格和音色风格继续合成；关闭后会中断本次合成并提示错误。",
     "default": true
   },

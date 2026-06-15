@@ -36,7 +36,7 @@
 | 音色库 | 上传 `mp3` / `wav` 授权样本，本地保存音色元数据 |
 | 多音色路由 | 支持全局、群、用户、情绪四类默认音色 |
 | 情绪控制 | 支持 `happy`、`sad`、`angry`、`neutral`，可自动轻量识别 |
-| AI 风格导演 | 可让 AstrBot LLM 为每段文本生成隐藏的自然语言风格指令，让语音更贴合情景 |
+| 发送前 AI 导演 | 可指定 AstrBot AI 服务商，为每段文本生成隐藏风格指令，并可优化只用于音频的朗读文本 |
 | 发送策略 | 支持只发音频、文字+音频、只发文字 |
 | 自动语音化 | 普通 LLM 回复可按概率转语音，默认关闭 |
 | 试听诊断 | Pages 内一键诊断 Key、模型、音色和网络链路 |
@@ -59,7 +59,7 @@ flowchart LR
 
 - `连接配置`：填写 MiMo API Key、Base URL、模型、并发和文本长度限制。
 - `发送策略`：切换只发音频、文字+音频、只发文字；配置自动语音化概率。
-- `AI 风格导演`：根据文本、情绪和音色生成 MiMo 风格控制指令，只影响语音表现，不改变最终回复文本。
+- `发送前 AI 导演`：根据文本、情绪和音色生成 MiMo 风格控制指令；可剔除无意义口头填充并加入自然停顿，只影响音频，不改变最终回复文本。
 - `情绪与分段`：控制情绪路由和长文本分段。
 - `音色库`：上传授权音频、设置风格标签和默认音色。
 - `试听工作台`：选择音色、情绪和临时风格指令，快速试听。
@@ -132,9 +132,11 @@ pip install -r requirements.txt
 - 参考音频仅支持 `mp3` / `wav`，默认限制为 10MB。
 - voiceclone 的低延迟流式能力官方暂未开放，因此插件保持非流式合成。
 
-## AI 风格导演
+## 发送前 AI 导演
 
-开启后，插件会先调用 AstrBot 当前 LLM，为待朗读文本生成一句短的 MiMo 风格控制指令，例如“用贴近耳边的轻声、慢一点、带一点安慰感”。这段指令只会作为 MiMo `user` 消息参与合成，真正朗读的文本仍然只放在 `assistant` 消息里，因此不会出现在最终回复内容或语音正文中。
+开启后，插件会先调用 AstrBot LLM，为待朗读文本生成一份隐藏的音频导演方案：`style_context` 会作为 MiMo `user` 消息参与合成，`speech_text` 只作为音频朗读文本使用。最终聊天文字仍保持原样，不会被改写。
+
+可以在 Pages 中填写 `AI 服务商 ID`，指定某个 AstrBot AI 服务商专门负责音频导演；留空则使用当前默认 LLM。开启“优化音频朗读文本”后，AI 可以在不改变原意的前提下剔除“嗯、啊、呃、那个、就是说”等无意义填充，并用标点整理停顿，让音频更自然。
 
 建议先在少量群聊/私聊里测试，再开启自动语音化；它会额外消耗一次 LLM 调用。
 
@@ -185,8 +187,8 @@ audio_path = await plugin.text_to_speech(
 
 ```bash
 python -B -m unittest discover -s tests -v
-python -B -m py_compile main.py pages_api.py core/audio_codec.py core/config.py core/emotion.py core/mimo_official_client.py core/pages_upload.py core/text_processing.py core/voice_store.py
-node --check pages/Settings/app.js
+python -B -m py_compile main.py pages_api.py core/audio_codec.py core/config.py core/emotion.py core/mimo_official_client.py core/pages_upload.py core/style_director.py core/text_processing.py core/voice_store.py
+node --check pages/settings/app.js
 ```
 
 ## 免责声明

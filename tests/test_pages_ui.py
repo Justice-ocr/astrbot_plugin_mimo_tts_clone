@@ -2,7 +2,7 @@ from pathlib import Path
 import unittest
 
 
-PAGES_DIR = Path(__file__).resolve().parents[1] / "pages" / "Settings"
+PAGES_DIR = Path(__file__).resolve().parents[1] / "pages" / "settings"
 MOJIBAKE_MARKERS = ("闂", "闁", "閻", "濮", "閸", "濞", "缂", "閺")
 
 

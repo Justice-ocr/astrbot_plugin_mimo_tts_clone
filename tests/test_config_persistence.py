@@ -44,7 +44,9 @@ class _Context:
         self.llm_calls.append(kwargs)
         if self.fail_llm:
             raise RuntimeError("llm failed")
-        return types.SimpleNamespace(completion_text="用轻柔、贴近、带一点夜晚陪伴感的语气。")
+        return types.SimpleNamespace(
+            completion_text='{"style_context":"用轻柔、贴近、带一点夜晚陪伴感的语气。","speech_text":"晚上好，欢迎回来。"}'
+        )
 
 
 def _command_decorator(*_args, **_kwargs):
@@ -178,17 +180,21 @@ class ConfigPersistenceTests(unittest.TestCase):
         cfg = normalize_config(
             {
                 "ai_style_director_enabled": "true",
+                "ai_style_director_provider_id": "  director-a  ",
                 "ai_style_director_prompt": "  让语音更像真人  ",
                 "ai_style_director_mode": "hybrid",
                 "ai_style_director_max_chars": 12,
+                "ai_style_director_optimize_text": "on",
                 "ai_style_director_fallback_to_emotion": "off",
             }
         )
 
         self.assertTrue(cfg["ai_style_director_enabled"])
+        self.assertEqual(cfg["ai_style_director_provider_id"], "director-a")
         self.assertEqual(cfg["ai_style_director_prompt"], "让语音更像真人")
         self.assertEqual(cfg["ai_style_director_mode"], "hybrid")
         self.assertEqual(cfg["ai_style_director_max_chars"], 20)
+        self.assertTrue(cfg["ai_style_director_optimize_text"])
         self.assertFalse(cfg["ai_style_director_fallback_to_emotion"])
 
     def test_runtime_config_migrates_legacy_file_fallback(self):
@@ -276,7 +282,7 @@ class ConfigPersistenceTests(unittest.TestCase):
                 style_context="靠近一点",
             )
 
-            result = asyncio.run(
+            result, speech_text = asyncio.run(
                 plugin._build_tts_context(
                     voice,
                     "neutral",
@@ -290,8 +296,10 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertIn("平稳", result)
             self.assertIn("靠近一点", result)
             self.assertIn("夜晚陪伴感", result)
+            self.assertEqual(speech_text, "晚上好，欢迎回来。")
             self.assertEqual(len(ctx.llm_calls), 1)
             self.assertIn("待朗读文本：晚上好，欢迎回来。", ctx.llm_calls[0]["prompt"])
+            self.assertIn("请输出最终 JSON", ctx.llm_calls[0]["prompt"])
 
     def test_ai_style_director_can_fail_hard_when_fallback_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:

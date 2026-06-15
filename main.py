@@ -23,7 +23,7 @@ from .core.audio_codec import encode_voice_file_data_url, estimate_base64_chars
 from .core.config import build_plugin_config, normalize_config
 from .core.emotion import EmotionRouter, SUPPORTED_EMOTIONS, normalize_emotion
 from .core.mimo_official_client import MimoOfficialClient, MimoTTSConfig
-from .core.style_director import StyleDirectorInput, generate_style_directive
+from .core.style_director import StyleDirectorInput, generate_style_plan
 from .core.text_processing import clean_tts_text, split_tts_text
 from .core.voice_store import VoiceProfile, VoiceStore
 from .pages_api import PagesAPIMixin
@@ -51,7 +51,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         self.emotion_router = EmotionRouter(emotion_contexts=self.plugin_config.emotion_contexts)
         self.voice_store = VoiceStore(self.data_dir)
         self._tts_sem = asyncio.Semaphore(self.plugin_config.max_concurrency)
-        self._style_director_cache: dict[tuple[str, str, str], str] = {}
+        self._style_director_cache: dict[tuple[str, str, str, bool], tuple[str, str]] = {}
         self._register_pages_web_api()
 
     @staticmethod
@@ -258,14 +258,15 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         )
         if voice is None:
             raise RuntimeError("暂无可用音色，请先在插件 Pages 中上传参考音频。")
-        tts_context = await self._build_tts_context(
+        tts_context, tts_text = await self._build_tts_context(
             voice,
             resolved_emotion,
             context,
             text=cleaned,
             style_director_enabled=style_director_enabled,
         )
-        segments = self._split_for_tts(cleaned) if split else [cleaned]
+        final_text = tts_text or cleaned
+        segments = self._split_for_tts(final_text) if split else [final_text]
         return [
             await self._synthesize_text_to_file(segment, voice, context=tts_context)
             for segment in segments
@@ -417,7 +418,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         *,
         text: str = "",
         style_director_enabled: bool | None = None,
-    ) -> str:
+    ) -> tuple[str, str]:
         base_context = self.emotion_router.build_context(
             base_context=self.plugin_config.default_context,
             emotion=emotion,
@@ -430,16 +431,23 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             else bool(style_director_enabled)
         )
         if not use_style_director:
-            return base_context
+            return base_context, text
 
-        cache_key = (str(voice.id or ""), str(emotion or ""), str(text[:128] if text else ""))
+        cache_key = (
+            str(voice.id or ""),
+            str(emotion or ""),
+            str(text[:128] if text else ""),
+            bool(self.plugin_config.ai_style_director_optimize_text),
+        )
         cached = self._style_director_cache.get(cache_key)
         if cached:
-            return self._merge_directed_context(base_context, cached)
+            style_context, speech_text = cached
+            return self._merge_directed_context(base_context, style_context), speech_text or text
 
         directive = ""
+        speech_text = text
         try:
-            directive = await generate_style_directive(
+            plan = await generate_style_plan(
                 self.context,
                 StyleDirectorInput(
                     text=text,
@@ -449,18 +457,23 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                     voice_style_context=voice.style_context,
                     existing_context=command_context or base_context,
                     max_chars=self.plugin_config.ai_style_director_max_chars,
+                    optimize_speech_text=self.plugin_config.ai_style_director_optimize_text,
+                    max_speech_chars=self.plugin_config.max_text_chars,
                 ),
                 template=self.plugin_config.ai_style_director_prompt,
+                provider_id=self.plugin_config.ai_style_director_provider_id,
             )
+            directive = plan.style_context
+            speech_text = plan.speech_text or text
         except Exception as exc:
             self.logger.warning("[mimo-tts] style director failed: %s", exc)
             if not self.plugin_config.ai_style_director_fallback_to_emotion:
                 raise RuntimeError(f"AI 风格导演失败：{exc}") from exc
 
         if directive:
-            self._style_director_cache[cache_key] = directive
-            return self._merge_directed_context(base_context, directive)
-        return base_context
+            self._style_director_cache[cache_key] = (directive, speech_text)
+            return self._merge_directed_context(base_context, directive), speech_text
+        return base_context, speech_text
 
     def _merge_directed_context(self, base_context: str, directive: str) -> str:
         if self.plugin_config.ai_style_director_mode == "direct":
