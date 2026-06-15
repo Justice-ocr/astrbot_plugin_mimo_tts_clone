@@ -186,6 +186,14 @@
     },
     "default": []
   },
+  "admin_users": {
+    "type": "list",
+    "description": "插件管理员用户 ID；管理员不受自动语音黑白名单影响",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
   "file_fallback_enabled": {
     "type": "bool",
     "description": "语音消息发送失败或当前版本缺少语音组件时，允许回退为文件发送",
@@ -200,13 +208,5 @@
     "type": "int",
     "description": "生成音频文件最多保留数量，0 表示不按数量清理",
     "default": 100
-  },
-  "admin_users": {
-    "type": "list",
-    "description": "插件管理员用户 ID",
-    "items": {
-      "type": "string"
-    },
-    "default": []
   }
 }

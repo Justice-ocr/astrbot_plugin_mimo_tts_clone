@@ -255,6 +255,14 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.assertEqual(cfg["auto_tts_group_blacklist"], ["789"])
         self.assertEqual(cfg["auto_tts_private_whitelist"], ["alice", "bob"])
         self.assertEqual(cfg["auto_tts_private_blacklist"], [])
+        self.assertEqual(cfg["admin_users"], [])
+
+    def test_runtime_config_normalizes_admin_users(self):
+        from astrbot_plugin_mimo_tts_clone.core.config import normalize_config
+
+        cfg = normalize_config({"admin_users": "admin-1, admin-2\nadmin-1"})
+
+        self.assertEqual(cfg["admin_users"], ["admin-1", "admin-2"])
 
     def test_runtime_config_normalizes_ai_style_director_options(self):
         from astrbot_plugin_mimo_tts_clone.core.config import normalize_config

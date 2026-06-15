@@ -115,14 +115,29 @@
           <label class="studio-switch"><input id="auto-tts-enabled" type="checkbox" /><span>启用普通 LLM 回复自动语音化</span></label>
           <label class="studio-switch"><input id="file-fallback-enabled" type="checkbox" /><span>语音失败时允许回退为文件</span></label>
         </div>
-        <div class="policy-grid">
-          <label>自动语音群白名单<textarea id="auto-tts-group-whitelist" rows="2" placeholder="可填群 ID，多个用逗号或换行分隔"></textarea></label>
-          <label>自动语音群黑名单<textarea id="auto-tts-group-blacklist" rows="2" placeholder="命中的群将禁用自动语音化"></textarea></label>
-          <label>自动语音私聊白名单<textarea id="auto-tts-private-whitelist" rows="2" placeholder="可填私聊 ID，多个用逗号或换行分隔"></textarea></label>
-          <label>自动语音私聊黑名单<textarea id="auto-tts-private-blacklist" rows="2" placeholder="命中的私聊将禁用自动语音化"></textarea></label>
-        </div>
         <p id="test-hint" class="field-hint">诊断会生成一段短音频，用来检查 Key、模型、音色和网络。</p>
       </article>
+    </section>
+
+    <section class="studio-card access-card">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">AUTO TTS ACCESS</span>
+          <h2>自动语音访问控制</h2>
+        </div>
+        <span class="soft-pill">管理员优先</span>
+      </div>
+      <div class="policy-note">
+        <strong>规则顺序</strong>
+        <span>管理员 ID 永远放行；普通用户先看黑名单，再看白名单。白名单留空表示不限制。可填纯 ID，也可填完整 UMO。</span>
+      </div>
+      <label class="wide">管理员用户 ID<textarea id="admin-users" rows="2" placeholder="管理员不受黑白名单影响；多个用逗号或换行分隔"></textarea></label>
+      <div class="policy-grid">
+        <label>自动语音群白名单<textarea id="auto-tts-group-whitelist" rows="2" placeholder="可填群 ID，多个用逗号或换行分隔"></textarea></label>
+        <label>自动语音群黑名单<textarea id="auto-tts-group-blacklist" rows="2" placeholder="命中的群将禁用自动语音化"></textarea></label>
+        <label>自动语音私聊白名单<textarea id="auto-tts-private-whitelist" rows="2" placeholder="可填私聊 ID，多个用逗号或换行分隔"></textarea></label>
+        <label>自动语音私聊黑名单<textarea id="auto-tts-private-blacklist" rows="2" placeholder="命中的私聊将禁用自动语音化"></textarea></label>
+      </div>
     </section>
 
     <section class="studio-card director-card">

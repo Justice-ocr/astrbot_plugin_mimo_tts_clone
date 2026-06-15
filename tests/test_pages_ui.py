@@ -109,6 +109,8 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("field-hint", css)
         self.assertIn("readiness-item", css)
         self.assertIn("policy-grid", html)
+        self.assertIn("access-card", html)
+        self.assertIn("admin-users", html)
         self.assertIn("auto-tts-group-whitelist", html)
         self.assertIn("auto-tts-private-blacklist", html)
 

@@ -154,6 +154,7 @@ function configPayload() {
     auto_tts_group_blacklist: $('auto-tts-group-blacklist').value,
     auto_tts_private_whitelist: $('auto-tts-private-whitelist').value,
     auto_tts_private_blacklist: $('auto-tts-private-blacklist').value,
+    admin_users: $('admin-users').value,
     file_fallback_enabled: $('file-fallback-enabled').checked,
     output_retention_days: Number($('output-retention-days').value || 0),
     output_max_files: Number($('output-max-files').value || 0),
@@ -323,6 +324,7 @@ function applyState(payload) {
   $('auto-tts-group-blacklist').value = (state.config.auto_tts_group_blacklist || []).join('\n');
   $('auto-tts-private-whitelist').value = (state.config.auto_tts_private_whitelist || []).join('\n');
   $('auto-tts-private-blacklist').value = (state.config.auto_tts_private_blacklist || []).join('\n');
+  $('admin-users').value = (state.config.admin_users || []).join('\n');
   $('file-fallback-enabled').checked = state.config.file_fallback_enabled !== false;
   $('output-retention-days').value = state.config.output_retention_days ?? 7;
   $('output-max-files').value = state.config.output_max_files ?? 100;
@@ -639,6 +641,7 @@ function bindConfigDirtyState() {
     'auto-tts-group-blacklist',
     'auto-tts-private-whitelist',
     'auto-tts-private-blacklist',
+    'admin-users',
     'file-fallback-enabled',
     'output-retention-days',
     'output-max-files',

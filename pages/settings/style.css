@@ -488,6 +488,32 @@ h2 {
   margin-top: 14px;
 }
 
+.access-card {
+  background:
+    radial-gradient(circle at 92% 10%, rgba(232,189,98,.18), transparent 28%),
+    var(--card-bg);
+}
+
+.policy-note {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid rgba(232,189,98,.28);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  background: rgba(255, 249, 229, .58);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.65;
+}
+
+.policy-note strong {
+  flex: 0 0 auto;
+  color: #80601e;
+  font-weight: 950;
+}
+
 label {
   display: grid;
   gap: 8px;
