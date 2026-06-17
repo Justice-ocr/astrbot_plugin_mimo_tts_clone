@@ -586,7 +586,15 @@ async function uploadVoice() {
   }
 }
 
-async function voiceAction(action, id) {
+function resetDeleteConfirmation(button) {
+  if (!button) return;
+  clearTimeout(button._confirmTimeout);
+  button.dataset.confirming = 'false';
+  button.textContent = button.dataset.originalText || '删除';
+  button.classList.remove('confirming');
+}
+
+async function voiceAction(action, id, button = null) {
   const voice = state.voices.find(item => item.id === id);
   if (!voice) return;
 
@@ -597,7 +605,17 @@ async function voiceAction(action, id) {
     const res = await bridge.apiPost('update_voice', { voice_id: id, enabled: !voice.enabled });
     if (!res.success) throw new Error(res.error || '更新失败');
   } else if (action === 'delete') {
-    if (!confirm(`删除音色「${voice.name}」？`)) return;
+    if (!button) throw new Error('删除按钮状态不可用，请刷新页面后重试');
+    if (button.dataset.confirming !== 'true') {
+      button.dataset.confirming = 'true';
+      button.dataset.originalText = button.textContent;
+      button.textContent = '确定删除？';
+      button.classList.add('confirming');
+      button._confirmTimeout = setTimeout(() => resetDeleteConfirmation(button), 3000);
+      toast(`再次点击确认删除「${voice.name}」`, 'warn');
+      return;
+    }
+    resetDeleteConfirmation(button);
     const res = await bridge.apiPost('delete_voice', { voice_id: id });
     if (!res.success) throw new Error(res.error || '删除失败');
   }
@@ -742,7 +760,7 @@ async function init() {
     const button = event.target.closest('button[data-action]');
     if (!button) return;
     try {
-      await voiceAction(button.dataset.action, button.dataset.id);
+      await voiceAction(button.dataset.action, button.dataset.id, button);
     } catch (error) {
       toast(extractErrorMessage(error), 'err');
     }

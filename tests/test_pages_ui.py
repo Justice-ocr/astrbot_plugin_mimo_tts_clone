@@ -133,3 +133,14 @@ class PagesUITests(unittest.TestCase):
         self.assertRegex(css, r"\.studio-switch input\s*\{[^}]*transition:\s*none;")
         studio_hover = css.split(".studio-card:hover", 1)[1].split("}", 1)[0]
         self.assertNotIn("transform", studio_hover)
+
+    def test_settings_delete_voice_uses_sandbox_safe_confirmation(self):
+        js = (PAGES_DIR / "app.js").read_text(encoding="utf-8")
+        css = (PAGES_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertNotIn("confirm(", js)
+        self.assertIn("function resetDeleteConfirmation", js)
+        self.assertIn("button.dataset.confirming", js)
+        self.assertIn("setTimeout", js)
+        self.assertIn("voiceAction(button.dataset.action, button.dataset.id, button)", js)
+        self.assertIn(".voice-actions button.confirming", css)

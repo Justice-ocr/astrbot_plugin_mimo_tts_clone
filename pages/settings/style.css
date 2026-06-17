@@ -660,6 +660,13 @@ button.danger {
   color: var(--red);
 }
 
+.voice-actions button.confirming {
+  border-color: rgba(205, 75, 52, .48);
+  color: #9b2f20;
+  background: linear-gradient(135deg, rgba(255, 239, 226, .98), rgba(255, 221, 207, .9));
+  box-shadow: 0 10px 22px rgba(174, 72, 45, .14);
+}
+
 .studio-switch {
   display: flex;
   min-height: 49px;
