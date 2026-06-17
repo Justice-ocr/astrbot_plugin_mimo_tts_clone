@@ -144,3 +144,19 @@ class PagesUITests(unittest.TestCase):
         self.assertIn("setTimeout", js)
         self.assertIn("voiceAction(button.dataset.action, button.dataset.id, button)", js)
         self.assertIn(".voice-actions button.confirming", css)
+
+    def test_settings_handles_astrbot_pages_runtime_constraints(self):
+        js = (PAGES_DIR / "app.js").read_text(encoding="utf-8")
+        html = (PAGES_DIR / "index.html").read_text(encoding="utf-8")
+
+        save_config = js.split("async function saveConfig()", 1)[1].split("function validateVoiceUpload", 1)[0]
+        preview = js.split("async function preview()", 1)[1].split("async function testConnection", 1)[0]
+        voice_action = js.split("async function voiceAction", 1)[1].split("async function setEmotionDefault", 1)[0]
+
+        self.assertIn("await refresh();", save_config)
+        self.assertNotIn('target="_blank"', html)
+        self.assertIn("playPromise", preview)
+        self.assertIn("请手动点击播放器播放", preview)
+        self.assertIn("lockedButton", voice_action)
+        self.assertIn("setBusy(lockedButton, true", voice_action)
+        self.assertIn("setBusy(lockedButton, false", voice_action)

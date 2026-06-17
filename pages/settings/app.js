@@ -489,13 +489,14 @@ async function saveConfig() {
   const res = await bridge.apiPost('save_config', configPayload());
   if (!res.success) throw new Error(res.error || '保存失败');
   state.config = res.config || state.config;
-  updateStatus();
-  markClean();
   if (res.warning) {
+    updateStatus();
+    markClean();
     setActionState('配置已保存到插件本地文件', 'is-dirty');
     toast(res.warning, 'warn');
     return;
   }
+  await refresh();
   toast('配置已保存');
 }
 
@@ -597,30 +598,43 @@ function resetDeleteConfirmation(button) {
 async function voiceAction(action, id, button = null) {
   const voice = state.voices.find(item => item.id === id);
   if (!voice) return;
-
-  if (action === 'default') {
-    const res = await bridge.apiPost('set_default_voice', { scope: 'global', voice_id: id });
-    if (!res.success) throw new Error(res.error || '设置默认失败');
-  } else if (action === 'toggle') {
-    const res = await bridge.apiPost('update_voice', { voice_id: id, enabled: !voice.enabled });
-    if (!res.success) throw new Error(res.error || '更新失败');
-  } else if (action === 'delete') {
-    if (!button) throw new Error('删除按钮状态不可用，请刷新页面后重试');
-    if (button.dataset.confirming !== 'true') {
-      button.dataset.confirming = 'true';
-      button.dataset.originalText = button.textContent;
-      button.textContent = '确定删除？';
-      button.classList.add('confirming');
-      button._confirmTimeout = setTimeout(() => resetDeleteConfirmation(button), 3000);
-      toast(`再次点击确认删除「${voice.name}」`, 'warn');
-      return;
-    }
-    resetDeleteConfirmation(button);
-    const res = await bridge.apiPost('delete_voice', { voice_id: id });
-    if (!res.success) throw new Error(res.error || '删除失败');
+  let lockedButton = null;
+  if (button && action !== 'delete') {
+    lockedButton = button;
+    setBusy(lockedButton, true, '处理中...');
   }
 
-  await refresh();
+  try {
+    if (action === 'default') {
+      const res = await bridge.apiPost('set_default_voice', { scope: 'global', voice_id: id });
+      if (!res.success) throw new Error(res.error || '设置默认失败');
+    } else if (action === 'toggle') {
+      const res = await bridge.apiPost('update_voice', { voice_id: id, enabled: !voice.enabled });
+      if (!res.success) throw new Error(res.error || '更新失败');
+    } else if (action === 'delete') {
+      if (!button) throw new Error('删除按钮状态不可用，请刷新页面后重试');
+      if (button.dataset.confirming !== 'true') {
+        button.dataset.confirming = 'true';
+        button.dataset.originalText = button.textContent;
+        button.textContent = '确定删除？';
+        button.classList.add('confirming');
+        button._confirmTimeout = setTimeout(() => resetDeleteConfirmation(button), 3000);
+        toast(`再次点击确认删除「${voice.name}」`, 'warn');
+        return;
+      }
+      resetDeleteConfirmation(button);
+      lockedButton = button;
+      setBusy(lockedButton, true, '删除中...');
+      const res = await bridge.apiPost('delete_voice', { voice_id: id });
+      if (!res.success) throw new Error(res.error || '删除失败');
+    }
+
+    await refresh();
+  } finally {
+    if (lockedButton && document.body.contains(lockedButton)) {
+      setBusy(lockedButton, false);
+    }
+  }
 }
 
 async function setEmotionDefault(emotion, voiceId) {
@@ -650,7 +664,12 @@ async function preview() {
   if (!res.success || !res.audio_data) throw new Error(res.error || '试听失败');
 
   $('preview-audio').src = res.audio_data;
-  $('preview-audio').play().catch(() => {});
+  const playPromise = $('preview-audio').play();
+  if (playPromise && typeof playPromise.catch === 'function') {
+    playPromise.catch(() => {
+      setPreviewHint('音频已生成；当前页面环境阻止自动播放，请手动点击播放器播放。', 'warn');
+    });
+  }
   toast(`试听生成成功，情绪：${res.emotion || 'neutral'}`);
 }
 
