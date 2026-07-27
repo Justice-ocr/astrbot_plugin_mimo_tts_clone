@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from astrbot_plugin_mimo_tts_clone.core.text_processing import (
+    TextSegmentationError,
     clean_tts_text,
     split_tts_text,
 )
@@ -25,7 +26,18 @@ class TextProcessingTests(unittest.TestCase):
         parts = split_tts_text(
             "第一句很短。第二句也很短！第三句继续？第四句结束。",
             max_chars=8,
-            max_segments=3,
+            max_segments=4,
         )
 
-        self.assertEqual(parts, ["第一句很短。", "第二句也很短！", "第三句继续？第四句结束。"])
+        self.assertEqual(parts, ["第一句很短。", "第二句也很短！", "第三句继续？", "第四句结束。"])
+
+    def test_split_tts_text_never_creates_an_oversized_tail(self):
+        text = "这是一个句子。" * 400
+
+        with self.assertRaises(TextSegmentationError):
+            split_tts_text(text, max_chars=180, max_segments=6)
+
+    def test_split_tts_text_hard_splits_a_single_long_sentence(self):
+        parts = split_tts_text("甲" * 25, max_chars=10, max_segments=3)
+
+        self.assertEqual([len(part) for part in parts], [10, 10, 5])

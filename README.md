@@ -6,13 +6,13 @@
 
 <p align="center">
   基于 MiMo 官方 <code>mimo-v2.5-tts-voiceclone</code> 的 AstrBot TTS 音色克隆插件。<br />
-  支持 Pages 可视化管理、多音色切换、情绪路由、自动语音化、试听诊断与输出清理。
+  支持 Pages 可视化管理、多音色切换、情绪路由、可恢复后台任务、可靠性保护与试听诊断。
 </p>
 
 <p align="center">
   <a href="https://github.com/Justice-ocr/astrbot_plugin_mimo_tts_clone">GitHub 仓库</a>
   ·
-  <a href="https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/speech-synthesis-v2.5">MiMo 官方文档</a>
+  <a href="https://mimo.mi.com/static/docs/quick-start/usage-guide/audio/speech-synthesis-v2.5.md">MiMo 官方文档</a>
   ·
   <a href="#免责声明">免责声明</a>
 </p>
@@ -37,10 +37,11 @@
 | 多音色路由 | 支持全局、群、用户、情绪四类默认音色 |
 | 情绪控制 | 支持 `happy`、`sad`、`angry`、`neutral`，可自动轻量识别 |
 | 发送前 AI 导演 | 可指定 AstrBot AI 服务商，为每段文本生成隐藏风格指令，并可优化只用于音频的朗读文本 |
-| 发送策略 | 支持只发音频、文字+音频、只发文字 |
+| 发送策略 | 默认文字立即发送，TTS 进入受控后台队列，完成后向原会话补发音频；保留阻塞兼容模式 |
+| 后台可靠性 | 任务原子持久化与重启恢复、RPM 限流、指数退避、熔断、任务取消与历史清理 |
 | 自动语音化 | 普通 LLM 回复可按概率转语音，支持群聊/私聊黑白名单和管理员绕过，默认关闭 |
 | 试听诊断 | Pages 内一键诊断 Key、模型、音色和网络链路 |
-| 输出清理 | 按保留天数和最大文件数自动清理生成音频 |
+| 输出清理 | 后台音频默认发送成功即删除，也可改为按保留天数和最大文件数清理 |
 | 插件复用 | 暴露 `synthesize_text()`、`list_available_voices()`、`resolve_voice_id()` 方法 |
 
 ## 界面导览
@@ -99,6 +100,10 @@ pip install -r requirements.txt
 /tts群默认音色 音色名
 /tts情绪音色 happy 音色名
 /tts状态
+/tts任务
+/tts取消 任务ID
+/tts清空
+/tts清空 全部
 ```
 
 说明：
@@ -108,12 +113,24 @@ pip install -r requirements.txt
 - `-e` 支持 `happy`、`sad`、`angry`、`neutral`。
 - `-c` 可临时追加风格指令，例如“更轻、更近、像深夜电台”。
 - 管理类命令依赖 `admin_users` 配置。
+- `/tts清空` 只删除已结束记录；`/tts清空 全部` 还会取消排队和运行中的任务。
 
 ## 推荐配置
 
 | 配置项 | 推荐值 | 说明 |
 | --- | --- | --- |
-| `reply_mode` | `audio_only` | 命令式 TTS 通常只发语音更干净 |
+| `reply_mode` | `text_and_audio` | 默认保留文字，并在语音完成后补发音频 |
+| `delivery_mode` | `background` | 文字先发，TTS 不阻塞当前回复；可改为 `blocking` 兼容旧行为 |
+| `background_queue_size` | `20` | 后台等待任务上限；显式 `/tts` 任务优先于自动语音任务 |
+| `tts_timeout_seconds` | `120` | 单次 MiMo 请求超时 |
+| `tts_max_retries` | `2` | 插件只对限流与瞬态服务错误执行指数退避重试；SDK 重试关闭 |
+| `tts_rate_limit_rpm` | `90` | 所有 MiMo 合成请求共享的每分钟请求上限 |
+| `circuit_failure_threshold` | `5` | 连续瞬态失败达到阈值后熔断，冷却后只放行一次探测 |
+| `job_persistence_enabled` | `true` | 将任务状态原子保存到插件数据目录的 `tts_jobs.json` |
+| `job_recovery_max_age_hours` | `24` | 超过该年龄的未完成任务不再恢复 |
+| `background_audio_cleanup` | `after_delivery` | 主动发送成功后删除 WAV；可改为 `retention` |
+| `platform_preflight_enabled` | `true` | 已知平台明确不支持主动消息时拒绝后台任务；未知能力仍尝试发送 |
+| `live_api_test_enabled` | `false` | 是否允许 Pages“一键诊断”产生真实 MiMo 请求 |
 | `auto_tts_enabled` | `false` | 普通回复自动语音化建议按群逐步开启 |
 | `auto_tts_probability` | `0.1` - `0.3` | 避免群聊中过度刷屏 |
 | `max_voice_file_mb` | `10` | 越大请求体越大，速度也可能变慢 |
@@ -130,7 +147,8 @@ pip install -r requirements.txt
 - 风格、语气、情绪等自然语言控制放在 `role = user` 的消息中。
 - 参考音频通过 `audio.voice = data:{MIME_TYPE};base64,{BASE64_AUDIO}` 传入。
 - 参考音频仅支持 `mp3` / `wav`，默认限制为 10MB。
-- voiceclone 的低延迟流式能力官方暂未开放，因此插件保持非流式合成。
+- voiceclone 的低延迟流式能力官方暂未开放。默认后台模式是异步聊天交付，不是音频流式传输：文字先发送，完整 WAV 生成后再主动补发。
+- 官方当前建议尽量避免在约 2500 字以内分段，因此默认单请求和分段阈值均为 `2500`。超长文本会在调用前完整分段校验，最终合并成一个 WAV。
 
 ## 发送前 AI 导演
 
@@ -173,12 +191,27 @@ auto_tts_private_blacklist:
 
 Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrBot 日志中也会显示自动语音化被放行、跳过或拦截的原因，便于确认规则是否生效。
 
+## 后台任务与故障恢复
+
+- 每个任务保存原始会话 UMO、文本、来源、状态、时间、错误和最终 WAV 路径，不保存 AstrBot event 对象。
+- 插件启动时恢复未结束任务；如果最终 WAV 已存在，只执行主动发送，不重新合成。
+- 显式 `/tts` 比自动语音任务优先，同一会话始终按提交顺序处理。取消任务不会杀死整个 worker。
+- Record 主动发送失败时，在 `file_fallback_enabled=true` 下会重新构造 File 消息发送。
+- Pages 每 5 秒刷新任务和诊断，可取消单个活动任务、清理历史或二次确认后取消全部。
+- `failed` 任务若保留着完整 WAV，会在下次重启视为待交付任务；过期任务按恢复期限取消。
+
+## 从 v0.5.x 升级
+
+现有配置首次加载时自动迁移到 `config_version=2`。API Key、回复模式、交付模式、自动语音访问控制和音色数据保持不变；新增可靠性与任务配置使用 0.6.0 默认值。迁移结果会随下一次 Pages 保存写入本地配置。
+
+默认行为仍是 `text_and_audio + background`：文字先发，后台生成一个完整 WAV，再向原会话补发。需要旧行为时继续使用 `delivery_mode=blocking`。
+
 ## 给其他插件复用
 
 插件内部提供了面向复用的服务方法：
 
 ```python
-outputs = await plugin.synthesize_text(
+output = await plugin.synthesize_text(
     "晚上好，欢迎回来。",
     voice_name="温柔旁白",
     emotion="neutral",
@@ -194,7 +227,7 @@ audio_path = await plugin.text_to_speech(
 )
 ```
 
-这些方法会复用同一套清洗、情绪解析、默认音色优先级、分段和输出清理逻辑。
+`synthesize_text()` 返回一个完整 WAV 的 `pathlib.Path`。即使内部进行了多段合成，对外也只暴露合并后的单一路径；失败时会清理所有分段和 `.part` 临时文件。以上方法会复用同一套清洗、情绪解析、默认音色优先级、分段和输出清理逻辑。Pages 试听、LLM 工具和插件服务调用仍同步等待结果，不进入聊天后台队列。
 
 如果配合 `astrbot_plugin_daily_sharing` 使用，可以在每日分享 Pages 里选择语音 provider：
 
@@ -207,7 +240,7 @@ audio_path = await plugin.text_to_speech(
 | --- | --- |
 | 插件名 | `astrbot_plugin_mimo_tts_clone` |
 | 展示名 | MiMo TTS 音色克隆 |
-| 当前版本 | `v0.4.0` |
+| 当前版本 | `v0.6.0` |
 | 作者 | Justice-ocr |
 | 作者简介 | AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、Pages 管理体验与实用型机器人扩展 |
 | AstrBot 版本 | `>=4.16.0,<5` |
@@ -220,9 +253,20 @@ audio_path = await plugin.text_to_speech(
 
 ```bash
 python -B -m unittest discover -s tests -v
-python -B -m py_compile main.py pages_api.py core/audio_codec.py core/config.py core/emotion.py core/mimo_official_client.py core/pages_upload.py core/style_director.py core/synthesis_context.py core/text_processing.py core/voice_store.py
+python -B -m py_compile main.py pages_api.py core/audio_codec.py core/config.py core/emotion.py core/mimo_official_client.py core/pages_upload.py core/style_director.py core/synthesis_context.py core/text_processing.py core/tts_jobs.py core/voice_store.py core/wav_utils.py
 node --check pages/settings/app.js
 ```
+
+真实 MiMo API 测试默认跳过。只有在明确准备测试账号和已授权音色样本时才运行：
+
+```powershell
+$env:MIMO_TTS_LIVE_TEST = "1"
+$env:MIMO_API_KEY = "..."
+$env:MIMO_VOICE_FILE = "C:\path\to\authorized-voice.wav"
+python -B -m unittest tests.test_live_mimo_api -v
+```
+
+可选设置 `MIMO_BASE_URL`、`MIMO_TTS_MODEL` 和 `MIMO_TTS_LIVE_TEXT`。测试不会输出 API Key，生成文件使用临时目录并在结束后清理。
 
 真实 AstrBot 环境建议测试清单：
 
@@ -249,6 +293,9 @@ node --check pages/settings/app.js
 
 ## 致谢
 
-- [MiMo Speech Synthesis v2.5 官方文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/speech-synthesis-v2.5)
+- [MiMo Speech Synthesis v2.5 官方文档](https://mimo.mi.com/static/docs/quick-start/usage-guide/audio/speech-synthesis-v2.5.md)
+- [MiMo TTS API](https://mimo.mi.com/static/docs/api/audio/tts.md)
+- [MiMo API 限流说明](https://mimo.mi.com/static/docs/api/guidance/rate-limit.md)
+- [MiMo API 错误码](https://mimo.mi.com/static/docs/api/guidance/error-codes.md)
 - AstrBot 插件系统与 Pages 能力
 - Pages 前端视觉参考了 [Firefly](https://github.com/CuteLeaf/Firefly) 的清新玻璃卡片、柔和主题色与轻动效设计思路；未直接引入其 Astro/Tailwind/Svelte 技术栈。

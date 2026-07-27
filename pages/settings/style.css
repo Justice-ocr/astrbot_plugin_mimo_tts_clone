@@ -899,6 +899,53 @@ button.danger {
   align-items: center;
 }
 
+.reliability-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.runtime-switches {
+  margin-top: 14px;
+}
+
+.runtime-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.runtime-diagnostics div {
+  display: grid;
+  gap: 5px;
+  min-height: 72px;
+  padding: 13px;
+  background: rgba(255, 255, 255, .76);
+}
+
+.runtime-diagnostics strong { font-size: 12px; }
+.runtime-diagnostics span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.circuit-open { color: var(--red); border-color: rgba(188, 81, 74, .42); }
+.circuit-half_open { color: #80601e; border-color: rgba(232, 189, 98, .62); }
+
+.task-toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+.task-table-wrap { overflow-x: auto; }
+.task-table { width: 100%; min-width: 840px; border-collapse: collapse; font-size: 13px; }
+.task-table th, .task-table td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.task-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.task-table code { white-space: nowrap; }
+.task-session { max-width: 180px; overflow-wrap: anywhere; color: var(--muted); }
+.task-status, .task-flag { display: inline-flex; margin: 0 5px 4px 0; border-radius: 999px; padding: 3px 7px; background: rgba(102, 183, 168, .12); font-size: 11px; font-weight: 900; }
+.status-failed, .status-cancelled { background: rgba(188, 81, 74, .12); color: var(--red); }
+.status-running, .status-delivering { background: rgba(232, 189, 98, .18); color: #80601e; }
+.task-error { display: block; margin-top: 4px; color: var(--red); line-height: 1.45; }
+.task-cancel { min-height: 30px; padding: 5px 9px; }
+.danger { border-color: rgba(188, 81, 74, .32); color: var(--red); background: rgba(255, 245, 244, .82); }
+.task-card .empty-state { margin-top: 12px; border-radius: 8px; padding: 18px; }
+
 .audio-frame {
   display: grid;
   grid-template-columns: 120px 1fr;
@@ -1012,6 +1059,11 @@ audio { width: 100%; }
     grid-template-columns: 1fr;
   }
 
+  .reliability-grid,
+  .runtime-diagnostics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .span-7,
   .span-5 {
     grid-column: auto;
@@ -1036,6 +1088,11 @@ audio { width: 100%; }
   .policy-grid,
   .emotion-grid,
   .audio-frame {
+    grid-template-columns: 1fr;
+  }
+
+  .reliability-grid,
+  .runtime-diagnostics {
     grid-template-columns: 1fr;
   }
 

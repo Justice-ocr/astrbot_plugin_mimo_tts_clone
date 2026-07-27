@@ -18,7 +18,7 @@
           <button id="save-config" class="primary">保存全部配置</button>
           <button id="test-connection" class="secondary">一键诊断</button>
           <span id="save-state" class="action-state">配置已同步</span>
-          <a class="ghost-link" href="https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/speech-synthesis-v2.5" rel="noreferrer">MiMo 文档</a>
+          <a class="ghost-link" href="https://mimo.mi.com/static/docs/quick-start/usage-guide/audio/speech-synthesis-v2.5.md" rel="noreferrer">MiMo 文档</a>
         </div>
       </section>
       <aside class="hero-panel" aria-label="当前工作区概览">
@@ -82,9 +82,9 @@
           <span class="soft-pill">OpenAI-compatible</span>
         </div>
         <div class="form-grid two-col">
-          <label>API Key<input id="api-key" type="password" autocomplete="off" placeholder="填入 MiMo API Key" /></label>
+          <label>API Key<input id="api-key" type="password" autocomplete="new-password" placeholder="留空保留已保存的 Key" /></label>
           <label>Base URL<input id="base-url" type="text" /></label>
-          <label>模型<input id="model" type="text" /></label>
+          <label>模型<input id="model" type="text" readonly /></label>
           <label>最大文本长度<input id="max-text-chars" type="number" min="1" /></label>
           <label>并发数<input id="max-concurrency" type="number" min="1" /></label>
           <label>最大音频 MB<input id="max-voice-file-mb" type="number" min="1" /></label>
@@ -103,8 +103,24 @@
           <label>回复模式
             <select id="reply-mode">
               <option value="audio_only">只发音频</option>
-              <option value="text_and_audio">文字 + 音频</option>
+              <option value="text_and_audio" selected>文字 + 音频</option>
               <option value="text_only">只发文字</option>
+            </select>
+          </label>
+          <label>交付模式
+            <select id="delivery-mode">
+              <option value="background">后台生成，文字先发</option>
+              <option value="blocking">阻塞等待，兼容旧行为</option>
+            </select>
+          </label>
+          <label>后台队列容量<input id="background-queue-size" type="number" min="1" max="100" /></label>
+          <label>TTS 超时秒数<input id="tts-timeout-seconds" type="number" min="10" max="300" /></label>
+          <label>失败重试次数<input id="tts-max-retries" type="number" min="0" max="5" /></label>
+          <label>后台失败通知
+            <select id="async-failure-notice">
+              <option value="command_only">仅 /tts 命令</option>
+              <option value="always">所有任务</option>
+              <option value="never">不通知</option>
             </select>
           </label>
           <label>自动语音概率<input id="auto-tts-probability" type="number" min="0" max="1" step="0.05" /></label>
@@ -115,8 +131,61 @@
           <label class="studio-switch"><input id="auto-tts-enabled" type="checkbox" /><span>启用普通 LLM 回复自动语音化</span></label>
           <label class="studio-switch"><input id="file-fallback-enabled" type="checkbox" /><span>语音失败时允许回退为文件</span></label>
         </div>
-        <p id="test-hint" class="field-hint">诊断会生成一段短音频，用来检查 Key、模型、音色和网络。</p>
+        <p id="test-hint" class="field-hint">启用真实 MiMo 联调后，诊断会生成一段短音频，用来检查 Key、模型、音色和网络。</p>
+        <p id="queue-status" class="field-hint">队列空闲</p>
       </article>
+    </section>
+
+    <section class="studio-card runtime-card">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">RELIABILITY</span>
+          <h2>后台可靠性</h2>
+        </div>
+        <span id="circuit-state" class="soft-pill">CLOSED</span>
+      </div>
+      <div class="form-grid reliability-grid">
+        <label>每分钟请求上限<input id="tts-rate-limit-rpm" type="number" min="1" max="100" /></label>
+        <label>退避起始秒数<input id="tts-retry-backoff-base-seconds" type="number" min="0.1" max="30" step="0.1" /></label>
+        <label>退避最大秒数<input id="tts-retry-backoff-max-seconds" type="number" min="0.1" max="120" step="0.1" /></label>
+        <label>熔断失败阈值<input id="circuit-failure-threshold" type="number" min="1" max="20" /></label>
+        <label>熔断恢复秒数<input id="circuit-recovery-seconds" type="number" min="5" max="600" /></label>
+        <label>恢复任务最长小时<input id="job-recovery-max-age-hours" type="number" min="1" max="168" /></label>
+        <label>任务历史条数<input id="job-history-size" type="number" min="10" max="500" /></label>
+        <label>后台音频生命周期
+          <select id="background-audio-cleanup">
+            <option value="after_delivery">发送成功后删除</option>
+            <option value="retention">按保留策略清理</option>
+          </select>
+        </label>
+      </div>
+      <div class="switch-grid runtime-switches">
+        <label class="studio-switch"><input id="job-persistence-enabled" type="checkbox" /><span>持久化后台任务并在重启后恢复</span></label>
+        <label class="studio-switch"><input id="platform-preflight-enabled" type="checkbox" /><span>提交前检查平台主动消息能力</span></label>
+        <label class="studio-switch"><input id="live-api-test-enabled" type="checkbox" /><span>允许执行真实 MiMo 联调测试</span></label>
+      </div>
+      <div id="runtime-diagnostics" class="runtime-diagnostics" aria-live="polite"></div>
+    </section>
+
+    <section class="studio-card task-card">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">BACKGROUND TASKS</span>
+          <h2>实时任务</h2>
+        </div>
+        <div class="task-toolbar">
+          <button id="refresh-tasks" class="secondary">刷新</button>
+          <button id="clear-task-history" class="secondary">清理历史</button>
+          <button id="cancel-all-tasks" class="danger">取消全部</button>
+        </div>
+      </div>
+      <div class="task-table-wrap">
+        <table class="task-table">
+          <thead><tr><th>状态</th><th>任务</th><th>来源</th><th>会话</th><th>内容 / 错误</th><th>操作</th></tr></thead>
+          <tbody id="task-list"></tbody>
+        </table>
+      </div>
+      <p id="task-empty" class="empty-state">暂无后台任务记录</p>
     </section>
 
     <section class="studio-card access-card">

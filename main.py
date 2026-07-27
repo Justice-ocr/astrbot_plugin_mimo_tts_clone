@@ -4,8 +4,10 @@ import asyncio
 import json
 import pathlib
 import random
+import re
 import shlex
 import time
+from collections import OrderedDict
 from typing import Any
 
 from astrbot.api import logger
@@ -19,10 +21,20 @@ except Exception:  # pragma: no cover - AstrBot versions differ here.
     Plain = None
     Record = None
 
+try:
+    from astrbot.api.event import MessageChain
+except Exception:  # pragma: no cover - older AstrBot/test stubs.
+    MessageChain = None
+
 from .core.audio_codec import encode_voice_file_data_url, estimate_base64_chars
 from .core.config import build_plugin_config, normalize_config
 from .core.emotion import EmotionRouter, SUPPORTED_EMOTIONS, normalize_emotion
-from .core.mimo_official_client import MimoOfficialClient, MimoTTSConfig
+from .core.mimo_official_client import (
+    MimoOfficialClient,
+    MimoRateLimitError,
+    MimoTTSConfig,
+    MimoTransientError,
+)
 from .core.style_director import StyleDirectorInput, generate_style_plan
 from .core.synthesis_context import (
     TTSContextResult,
@@ -31,15 +43,21 @@ from .core.synthesis_context import (
     merge_directed_context,
 )
 from .core.text_processing import clean_tts_text, split_tts_text
+from .core.tts_jobs import TTSJob, TTSJobManager
+from .core.tts_reliability import CircuitOpenError, ReliabilityController
+from .core.wav_utils import merge_wav_files
 from .core.voice_store import VoiceProfile, VoiceStore
 from .pages_api import PagesAPIMixin
+
+
+_FINAL_OUTPUT_RE = re.compile(r"^mimo_tts_(?!.*\.part).+\.wav$")
 
 
 @register(
     "astrbot_plugin_mimo_tts_clone",
     "Justice-ocr",
     "MiMo 官方 TTS 音色克隆、多音色切换与 AI 语音导演",
-    "0.4.0",
+    "0.6.0",
 )
 class MimoTTSClonePlugin(PagesAPIMixin, Star):
     def __init__(self, context: Context, config: dict):
@@ -57,8 +75,26 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         self.emotion_router = EmotionRouter(emotion_contexts=self.plugin_config.emotion_contexts)
         self.voice_store = VoiceStore(self.data_dir)
         self._tts_sem = asyncio.Semaphore(self.plugin_config.max_concurrency)
-        self._style_director_cache: dict[Any, TTSContextResult] = {}
+        self._style_director_cache: OrderedDict[str, tuple[float, TTSContextResult]] = OrderedDict()
+        self._mimo_client: MimoOfficialClient | None = None
+        self._mimo_client_signature: tuple[Any, ...] | None = None
+        self._client_users: dict[MimoOfficialClient, int] = {}
+        self._retired_clients: set[MimoOfficialClient] = set()
+        self._client_close_tasks: set[asyncio.Task] = set()
+        self._voice_data_cache: OrderedDict[tuple[str, int, int], str] = OrderedDict()
+        self._job_manager: TTSJobManager | None = None
+        self._reliability = self._build_reliability_controller()
         self._register_pages_web_api()
+
+    def _build_reliability_controller(self) -> ReliabilityController:
+        return ReliabilityController(
+            requests_per_minute=self.plugin_config.tts_rate_limit_rpm,
+            max_retries=self.plugin_config.tts_max_retries,
+            backoff_base_seconds=self.plugin_config.tts_retry_backoff_base_seconds,
+            backoff_max_seconds=self.plugin_config.tts_retry_backoff_max_seconds,
+            circuit_failure_threshold=self.plugin_config.circuit_failure_threshold,
+            circuit_recovery_seconds=self.plugin_config.circuit_recovery_seconds,
+        )
 
     @staticmethod
     def _coerce_config(config: Any) -> dict[str, Any]:
@@ -103,15 +139,43 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         tmp_path.replace(self._config_file)
 
     def _update_runtime_config(self, changes: dict[str, Any]) -> dict[str, Any]:
+        previous_queue_settings = (
+            self.plugin_config.background_queue_size,
+            self.plugin_config.max_concurrency,
+            self.plugin_config.job_persistence_enabled,
+            self.plugin_config.job_recovery_max_age_hours,
+            self.plugin_config.job_history_size,
+        )
         merged = dict(self.config)
         for key in normalize_config({}):
             if key in changes:
+                if key == "api_key" and not str(changes[key] or "").strip():
+                    continue
                 merged[key] = changes[key]
         self.config = normalize_config(merged)
         self.plugin_config = build_plugin_config(self.config)
         self.emotion_router = EmotionRouter(emotion_contexts=self.plugin_config.emotion_contexts)
         self._tts_sem = asyncio.Semaphore(self.plugin_config.max_concurrency)
         self._style_director_cache.clear()
+        self._voice_data_cache.clear()
+        self._reliability = self._build_reliability_controller()
+        current_queue_settings = (
+            self.plugin_config.background_queue_size,
+            self.plugin_config.max_concurrency,
+            self.plugin_config.job_persistence_enabled,
+            self.plugin_config.job_recovery_max_age_hours,
+            self.plugin_config.job_history_size,
+        )
+        if self._job_manager is not None and current_queue_settings != previous_queue_settings:
+            queue = self._job_manager.snapshot()
+            if not queue["queued_jobs"] and not queue["running_jobs"]:
+                previous_manager = self._job_manager
+                self._job_manager = None
+                self._schedule_manager_stop(previous_manager)
+            else:
+                self.logger.warning(
+                    "[mimo-tts] queue runtime setting change is deferred until plugin reload because jobs are active"
+                )
         persisted = {"local": False, "native": False, "warning": ""}
         try:
             self._persist_local_config()
@@ -130,14 +194,87 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         return persisted
 
     def _client(self) -> MimoOfficialClient:
-        return MimoOfficialClient(
+        signature = (
+            self.plugin_config.api_key,
+            self.plugin_config.base_url,
+            self.plugin_config.model,
+            self.plugin_config.output_format,
+            self.plugin_config.tts_timeout_seconds,
+        )
+        if self._mimo_client is not None and self._mimo_client_signature == signature:
+            return self._mimo_client
+        previous = self._mimo_client
+        self._mimo_client = MimoOfficialClient(
             MimoTTSConfig(
                 api_key=self.plugin_config.api_key,
                 base_url=self.plugin_config.base_url,
                 model=self.plugin_config.model,
                 output_format=self.plugin_config.output_format,
+                timeout=float(self.plugin_config.tts_timeout_seconds),
+                max_retries=0,
             )
         )
+        self._mimo_client_signature = signature
+        if previous is not None:
+            if self._client_users.get(previous, 0):
+                self._retired_clients.add(previous)
+            else:
+                self._schedule_client_close(previous)
+        return self._mimo_client
+
+    def _acquire_client(self) -> MimoOfficialClient:
+        client = self._client()
+        self._client_users[client] = self._client_users.get(client, 0) + 1
+        return client
+
+    def _release_client(self, client: MimoOfficialClient) -> None:
+        remaining = self._client_users.get(client, 1) - 1
+        if remaining > 0:
+            self._client_users[client] = remaining
+            return
+        self._client_users.pop(client, None)
+        if client in self._retired_clients:
+            self._retired_clients.discard(client)
+            self._schedule_client_close(client)
+
+    def _schedule_client_close(self, client: MimoOfficialClient) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._retired_clients.add(client)
+            return
+        task = loop.create_task(client.close(), name="mimo-tts-client-close")
+        self._client_close_tasks.add(task)
+        task.add_done_callback(self._client_close_tasks.discard)
+
+    def _schedule_manager_stop(self, manager: TTSJobManager) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(manager.stop(drain_timeout=30.0), name="mimo-tts-queue-reconfigure")
+        self._client_close_tasks.add(task)
+        task.add_done_callback(self._client_close_tasks.discard)
+
+    async def _voice_data_url(self, voice: VoiceProfile) -> str:
+        path = pathlib.Path(voice.audio_path).resolve()
+        stat = await asyncio.to_thread(path.stat)
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        cached = self._voice_data_cache.get(key)
+        if cached is not None:
+            self._voice_data_cache.move_to_end(key)
+            return cached
+        encoded = await asyncio.to_thread(
+            encode_voice_file_data_url,
+            path,
+            max_bytes=self.plugin_config.max_voice_file_bytes,
+            max_base64_chars=estimate_base64_chars(self.plugin_config.max_voice_file_bytes),
+        )
+        self._voice_data_cache[key] = encoded
+        self._voice_data_cache.move_to_end(key)
+        while len(self._voice_data_cache) > 8:
+            self._voice_data_cache.popitem(last=False)
+        return encoded
 
     async def _synthesize_text_to_file(
         self,
@@ -145,6 +282,8 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         voice: VoiceProfile,
         *,
         context: str = "",
+        voice_data_url: str | None = None,
+        output_path: pathlib.Path | None = None,
     ) -> pathlib.Path:
         assistant_text = text.strip()
         if voice.style_tags.strip():
@@ -152,29 +291,43 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         if len(assistant_text) > self.plugin_config.max_text_chars:
             raise RuntimeError(f"文本过长，最大 {self.plugin_config.max_text_chars} 字")
 
-        voice_data_url = await asyncio.to_thread(
-            encode_voice_file_data_url,
-            pathlib.Path(voice.audio_path),
-            max_bytes=self.plugin_config.max_voice_file_bytes,
-            max_base64_chars=estimate_base64_chars(self.plugin_config.max_voice_file_bytes),
-        )
+        voice_data_url = voice_data_url or await self._voice_data_url(voice)
         output_dir = pathlib.Path(self.data_dir) / "outputs"
-        output_path = output_dir / f"mimo_tts_{time.time_ns()}.wav"
+        output_path = output_path or output_dir / f"mimo_tts_{time.time_ns()}.wav"
         async with self._tts_sem:
-            result = await self._client().synthesize_to_file(
-                text=assistant_text,
-                voice_data_url=voice_data_url,
-                output_path=output_path,
-                context=context or self.plugin_config.default_context,
-            )
-        await asyncio.to_thread(self._cleanup_outputs)
+            client = self._acquire_client()
+            try:
+                result = await self._reliability.execute(
+                    lambda: client.synthesize_to_file(
+                        text=assistant_text,
+                        voice_data_url=voice_data_url,
+                        output_path=output_path,
+                        context=context or self.plugin_config.default_context,
+                    ),
+                    retryable=lambda exc: isinstance(
+                        exc, (MimoRateLimitError, MimoTransientError)
+                    ),
+                )
+            finally:
+                self._release_client(client)
         return result
 
     def _cleanup_outputs(self) -> None:
         output_dir = pathlib.Path(self.data_dir) / "outputs"
         if not output_dir.is_dir():
             return
-        files = [path for path in output_dir.glob("mimo_tts_*") if path.is_file()]
+        protected = (
+            self._job_manager.protected_output_paths()
+            if self._job_manager is not None
+            else set()
+        )
+        files = [
+            path
+            for path in output_dir.glob("mimo_tts_*.wav")
+            if path.is_file()
+            and _FINAL_OUTPUT_RE.fullmatch(path.name)
+            and path.resolve() not in protected
+        ]
         now = time.time()
         retention_days = self.plugin_config.output_retention_days
         if retention_days > 0:
@@ -249,8 +402,8 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         group_id: str = "",
         split: bool = True,
         style_director_enabled: bool | None = None,
-    ) -> list[pathlib.Path]:
-        """Public service helper for commands, Pages, and other plugins."""
+    ) -> pathlib.Path:
+        """Synthesize one complete WAV, merging internal segments when needed."""
         cleaned = clean_tts_text(text)
         if not cleaned:
             raise RuntimeError("请输入要合成的文本")
@@ -272,11 +425,51 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             style_director_enabled=style_director_enabled,
         )
         final_text = tts_result.speech_text or cleaned
-        segments = self._split_for_tts(final_text) if split else [final_text]
-        return [
-            await self._synthesize_text_to_file(segment, voice, context=tts_result.context)
-            for segment in segments
+        style_prefix_chars = len(voice.style_tags.strip()) + 1 if voice.style_tags.strip() else 0
+        segment_limit = self.plugin_config.max_text_chars - style_prefix_chars
+        if segment_limit < 1:
+            raise RuntimeError("音色风格标签超过 MiMo 单次请求文本上限。")
+        segments = self._split_for_tts(final_text, max_chars=segment_limit) if split else [final_text]
+        if not segments:
+            raise RuntimeError("没有可合成的文本。")
+        for segment in segments:
+            assistant_length = len(segment) + (len(voice.style_tags.strip()) + 1 if voice.style_tags.strip() else 0)
+            if assistant_length > self.plugin_config.max_text_chars:
+                raise RuntimeError(
+                    f"文本分段超过 MiMo 单次请求上限 {self.plugin_config.max_text_chars} 字。"
+                )
+
+        output_dir = pathlib.Path(self.data_dir) / "outputs"
+        operation_id = time.time_ns()
+        final_path = output_dir / f"mimo_tts_{operation_id}.wav"
+        part_paths = [
+            output_dir / f"mimo_tts_{operation_id}.part{index:03d}.wav"
+            for index in range(len(segments))
         ]
+        voice_data_url = await self._voice_data_url(voice)
+        try:
+            for segment, part_path in zip(segments, part_paths, strict=True):
+                await self._synthesize_text_to_file(
+                    segment,
+                    voice,
+                    context=tts_result.context,
+                    voice_data_url=voice_data_url,
+                    output_path=part_path,
+                )
+            if len(part_paths) == 1:
+                await asyncio.to_thread(part_paths[0].replace, final_path)
+            else:
+                await asyncio.to_thread(merge_wav_files, part_paths, final_path)
+            await asyncio.to_thread(self._cleanup_outputs)
+            return final_path
+        except Exception:
+            final_path.unlink(missing_ok=True)
+            final_path.with_suffix(final_path.suffix + ".part").unlink(missing_ok=True)
+            raise
+        finally:
+            for part_path in part_paths:
+                part_path.unlink(missing_ok=True)
+                part_path.with_suffix(part_path.suffix + ".part").unlink(missing_ok=True)
 
     async def text_to_speech(
         self,
@@ -294,14 +487,14 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         """Compatibility helper for generic TTS callers such as daily_sharing."""
         del session_state
         group_id = str(target_umo or session or session_id or "").strip()
-        outputs = await self.synthesize_text(
+        output = await self.synthesize_text(
             text,
             voice_name=voice_name or voice or None,
             emotion=emotion or None,
             context=context,
             group_id=group_id,
         )
-        return str(outputs[0]) if outputs else ""
+        return str(output)
 
     if hasattr(filter, "llm_tool"):
 
@@ -330,7 +523,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 yield "empty text"
                 return
             try:
-                outputs = await self.synthesize_text(
+                output = await self.synthesize_text(
                     content,
                     voice_name=str(voice or "").strip() or None,
                     emotion=emotion,
@@ -342,13 +535,10 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             except Exception as exc:
                 yield f"tts failed: {exc}"
                 return
-            sent = 0
-            for output in outputs:
-                await self._send_audio_result(event, output)
-                sent += 1
+            await self._send_audio_result(event, output)
             if hasattr(event, "clear_result"):
                 event.clear_result()
-            yield str(outputs[0]) if outputs else f"sent {sent} audio"
+            yield str(output)
             return
 
     @staticmethod
@@ -570,9 +760,17 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             emotion=emotion,
             text=text,
             optimize_text=self.plugin_config.ai_style_director_optimize_text,
+            command_context=command_context,
+            voice_context=voice.style_context,
+            voice_description=voice.description,
+            provider_id=self.plugin_config.ai_style_director_provider_id,
+            prompt=self.plugin_config.ai_style_director_prompt,
+            mode=self.plugin_config.ai_style_director_mode,
         )
-        cached = self._style_director_cache.get(cache_key)
-        if cached:
+        cache_entry = self._style_director_cache.get(cache_key)
+        if cache_entry and time.monotonic() - cache_entry[0] <= 600:
+            cached = cache_entry[1]
+            self._style_director_cache.move_to_end(cache_key)
             result = TTSContextResult(
                 context=self._merge_directed_context(base_context, cached.style_context),
                 speech_text=cached.speech_text or text,
@@ -588,6 +786,8 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 cached=True,
             )
             return result
+        if cache_entry:
+            self._style_director_cache.pop(cache_key, None)
 
         directive = ""
         speech_text = text
@@ -633,7 +833,10 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 speech_text=speech_text,
                 style_context=directive,
             )
-            self._style_director_cache[cache_key] = result
+            self._style_director_cache[cache_key] = (time.monotonic(), result)
+            self._style_director_cache.move_to_end(cache_key)
+            while len(self._style_director_cache) > 128:
+                self._style_director_cache.popitem(last=False)
             self._log_style_director_plan(
                 voice=voice,
                 emotion=emotion,
@@ -686,14 +889,18 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             self.plugin_config.ai_style_director_mode,
         )
 
-    def _split_for_tts(self, text: str) -> list[str]:
+    def _split_for_tts(self, text: str, *, max_chars: int | None = None) -> list[str]:
         if not self.plugin_config.segment_enabled:
             return [text]
-        if len(text) < self.plugin_config.segment_threshold_chars:
+        limit = min(
+            self.plugin_config.segment_threshold_chars,
+            max_chars or self.plugin_config.max_text_chars,
+        )
+        if len(text) <= limit:
             return [text]
         return split_tts_text(
             text,
-            max_chars=self.plugin_config.segment_threshold_chars,
+            max_chars=limit,
             max_segments=self.plugin_config.segment_max_segments,
         )
 
@@ -720,6 +927,184 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         if self.plugin_config.file_fallback_enabled:
             await event.send(event.chain_result([File(name=audio_path.name, file=str(audio_path))]))
 
+    def _background_manager(self) -> TTSJobManager:
+        if self._job_manager is None:
+            persistence_path = (
+                pathlib.Path(self.data_dir) / "tts_jobs.json"
+                if self.plugin_config.job_persistence_enabled
+                else None
+            )
+            self._job_manager = TTSJobManager(
+                processor=self._process_tts_job,
+                deliverer=self._deliver_tts_job,
+                failure_handler=self._handle_tts_job_failure,
+                max_queue_size=self.plugin_config.background_queue_size,
+                worker_count=self.plugin_config.max_concurrency,
+                persistence_path=persistence_path,
+                history_size=self.plugin_config.job_history_size,
+                recovery_max_age_seconds=self.plugin_config.job_recovery_max_age_hours * 3600,
+            )
+        return self._job_manager
+
+    def _queue_snapshot(self) -> dict[str, object]:
+        queue = self._job_manager.snapshot() if self._job_manager is not None else {
+            "queued_jobs": 0,
+            "running_jobs": 0,
+            "completed_jobs": 0,
+            "failed_jobs": 0,
+            "cancelled_jobs": 0,
+            "recovered_jobs": 0,
+            "dropped_jobs": 0,
+            "average_latency_seconds": 0.0,
+            "last_error": "",
+        }
+        persistence_path = pathlib.Path(self.data_dir) / "tts_jobs.json"
+        return {
+            **queue,
+            **self._reliability.snapshot(),
+            "persistence_enabled": self.plugin_config.job_persistence_enabled,
+            "persistence_path": str(persistence_path),
+            "recovery_max_age_hours": self.plugin_config.job_recovery_max_age_hours,
+            "audio_cleanup": self.plugin_config.background_audio_cleanup,
+            "platform_preflight": self.plugin_config.platform_preflight_enabled,
+            "platforms": self._platform_capabilities(),
+        }
+
+    def _task_list(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self._job_manager.list_tasks(limit=limit) if self._job_manager is not None else []
+
+    async def _process_tts_job(self, job: TTSJob) -> pathlib.Path:
+        return await self.synthesize_text(
+            job.text,
+            voice_name=job.voice or None,
+            emotion=job.emotion or None,
+            context=job.context,
+            user_id=job.user_id,
+            group_id=job.group_id,
+        )
+
+    def _message_chain(self, components: list[Any]):
+        if MessageChain is None:
+            raise RuntimeError("当前 AstrBot 版本不支持主动消息 MessageChain。")
+        return MessageChain(chain=components)
+
+    async def _send_to_session(self, session: str, components: list[Any]) -> None:
+        sent = await self.context.send_message(session, self._message_chain(components))
+        if sent is False:
+            raise RuntimeError("AstrBot 未找到可主动发送该会话的平台。")
+
+    def _platform_capabilities(self) -> list[dict[str, Any]]:
+        manager = getattr(self.context, "platform_manager", None)
+        platforms = list(getattr(manager, "platform_insts", []) or [])
+        result = []
+        for platform in platforms:
+            try:
+                meta = platform.meta()
+                result.append({
+                    "id": str(getattr(meta, "id", "") or ""),
+                    "name": str(getattr(meta, "name", "") or ""),
+                    "proactive": bool(getattr(meta, "support_proactive_message", True)),
+                    "record_component": Record is not None,
+                    "file_fallback": self.plugin_config.file_fallback_enabled,
+                })
+            except Exception:
+                continue
+        return result
+
+    def _preflight_session(self, session: str) -> None:
+        if not self.plugin_config.platform_preflight_enabled:
+            return
+        platform_id = str(session or "").split(":", 1)[0]
+        matches = [
+            item for item in self._platform_capabilities()
+            if platform_id in {item["id"], item["name"]}
+        ]
+        if matches and not any(item["proactive"] for item in matches):
+            raise RuntimeError(f"平台 {platform_id} 不支持主动消息，无法后台补发语音。")
+
+    async def _deliver_tts_job(self, job: TTSJob, output: pathlib.Path) -> None:
+        self._preflight_session(job.session)
+        record_error: Exception | None = None
+        if Record is not None:
+            try:
+                await self._send_to_session(job.session, [Record(file=str(output))])
+            except Exception as exc:
+                record_error = exc
+                self.logger.warning(
+                    "[mimo-tts] proactive Record send failed, retrying as File: %s", exc
+                )
+            else:
+                record_error = None
+        else:
+            record_error = RuntimeError("Record component unavailable")
+        if record_error is not None:
+            if not self.plugin_config.file_fallback_enabled:
+                raise record_error
+            await self._send_to_session(
+                job.session, [File(name=output.name, file=str(output))]
+            )
+        self.logger.info(
+            "[mimo-tts] background audio delivered: job=%s source=%s session=%s",
+            job.id,
+            job.source,
+            clip_log_text(job.session),
+        )
+        if self.plugin_config.background_audio_cleanup == "after_delivery":
+            output.unlink(missing_ok=True)
+
+    async def _handle_tts_job_failure(self, job: TTSJob, exc: Exception) -> None:
+        self.logger.warning(
+            "[mimo-tts] background job failed: job=%s source=%s session=%s error=%s",
+            job.id,
+            job.source,
+            clip_log_text(job.session),
+            exc,
+        )
+        if not job.notify_on_failure or Plain is None:
+            return
+        await self._send_to_session(job.session, [Plain(f"语音生成失败：{exc}")])
+
+    def _failure_notice_enabled(self, source: str) -> bool:
+        mode = self.plugin_config.async_failure_notice
+        return mode == "always" or (mode == "command_only" and source == "command")
+
+    async def _submit_background_job(
+        self,
+        *,
+        event: AstrMessageEvent,
+        text: str,
+        source: str,
+        voice: str = "",
+        emotion: str = "",
+        context: str = "",
+    ) -> bool:
+        session = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not session:
+            raise RuntimeError("当前消息缺少 unified_msg_origin，无法后台补发语音。")
+        self._preflight_session(session)
+        job = TTSJob(
+            session=session,
+            text=text,
+            voice=voice,
+            emotion=emotion,
+            context=context,
+            user_id=str(event.get_sender_id() or "").strip(),
+            group_id=self._conversation_id(event),
+            source="command" if source == "command" else "auto",
+            notify_on_failure=self._failure_notice_enabled(source),
+        )
+        return await self._background_manager().submit(job)
+
+    if hasattr(filter, "on_platform_loaded"):
+
+        @filter.on_platform_loaded()
+        async def resume_persisted_tts_jobs(self):
+            manager = self._background_manager()
+            manager.start()
+            recovered = manager.snapshot().get("recovered_jobs", 0)
+            if recovered:
+                self.logger.info("[mimo-tts] resumed %s persisted TTS jobs", recovered)
+
     @filter.command("tts", alias={"朗读", "语音"})
     async def tts_command(self, event: AstrMessageEvent):
         raw = self._tail_any(event.message_str, ("tts", "朗读", "语音"))
@@ -731,13 +1116,33 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             )
             return
 
-        if self.plugin_config.reply_mode in {"text_only", "text_and_audio"}:
-            yield event.plain_result(text)
         if self.plugin_config.reply_mode == "text_only":
+            yield event.plain_result(text)
+            return
+        if self.plugin_config.delivery_mode == "background":
+            if self.plugin_config.reply_mode == "text_and_audio":
+                await event.send(event.plain_result(text))
+            try:
+                accepted = await self._submit_background_job(
+                    event=event,
+                    text=text,
+                    source="command",
+                    voice=voice_name or "",
+                    emotion=requested_emotion or "",
+                    context=command_context,
+                )
+            except Exception as exc:
+                yield event.plain_result(f"语音任务提交失败：{exc}")
+                return
+            if not accepted:
+                yield event.plain_result("语音队列已满，请稍后重试。")
             return
 
+        if self.plugin_config.reply_mode == "text_and_audio":
+            yield event.plain_result(text)
+
         try:
-            outputs = await self.synthesize_text(
+            output = await self.synthesize_text(
                 text,
                 voice_name=voice_name,
                 emotion=requested_emotion,
@@ -749,8 +1154,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             yield event.plain_result(f"语音生成失败：{exc}")
             return
 
-        for output in outputs:
-            await self._send_audio_result(event, output)
+        await self._send_audio_result(event, output)
 
     @filter.command("tts音色列表", alias={"音色列表"})
     async def list_voices_command(self, event: AstrMessageEvent):
@@ -805,8 +1209,29 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         if not text:
             self.logger.info("[mimo-tts] auto tts skipped: empty plain text")
             return
+        if self.plugin_config.delivery_mode == "background":
+            if self.plugin_config.reply_mode == "text_and_audio":
+                await event.send(result)
+                if hasattr(event, "clear_result"):
+                    event.clear_result()
+                else:
+                    result.chain = []
+            try:
+                accepted = await self._submit_background_job(
+                    event=event,
+                    text=text,
+                    source="auto",
+                )
+            except Exception as exc:
+                self.logger.warning("[mimo-tts] auto tts queue submit failed: %s", exc)
+                return
+            if not accepted:
+                self.logger.warning("[mimo-tts] auto tts skipped: background queue full")
+            elif self.plugin_config.reply_mode == "audio_only":
+                result.chain = [comp for comp in result.chain if not self._is_plain_component(comp)]
+            return
         try:
-            outputs = await self.synthesize_text(
+            output = await self.synthesize_text(
                 text,
                 user_id=str(event.get_sender_id() or "").strip(),
                 group_id=self._conversation_id(event),
@@ -816,23 +1241,18 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             return
 
         self.logger.info(
-            "[mimo-tts] auto tts generated: scope=%s matched=%s text=%s outputs=%s",
+            "[mimo-tts] auto tts generated: scope=%s matched=%s text=%s",
             access_decision["scope"],
             clip_log_text(access_decision["matched_rule"] or "none"),
             clip_log_text(text),
-            len(outputs),
         )
 
-        audio_components = [
-            component
-            for component in (self._audio_component(output) for output in outputs)
-            if component is not None
-        ]
-        if not audio_components:
+        audio_component = self._audio_component(output)
+        if audio_component is None:
             return
         if self.plugin_config.reply_mode == "audio_only":
             result.chain = [comp for comp in result.chain if not self._is_plain_component(comp)]
-        result.chain.extend(audio_components)
+        result.chain.append(audio_component)
 
     @filter.command("tts设置音色", alias={"设置音色"})
     async def set_user_voice_command(self, event: AstrMessageEvent):
@@ -898,6 +1318,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
     @filter.command("tts状态", alias={"tts狀態"})
     async def status_command(self, event: AstrMessageEvent):
         defaults = self.voice_store.defaults()
+        queue = self._queue_snapshot()
         lines = [
             "MiMo TTS 状态",
             f"model: {self.plugin_config.model}",
@@ -905,6 +1326,28 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             f"emotion_routing: {self.plugin_config.emotion_routing_enabled}",
             f"segment: {self.plugin_config.segment_enabled}, threshold={self.plugin_config.segment_threshold_chars}",
             f"reply_mode: {self.plugin_config.reply_mode}",
+            f"delivery_mode: {self.plugin_config.delivery_mode}",
+            (
+                "queue: "
+                f"queued={queue['queued_jobs']}, running={queue['running_jobs']}, "
+                f"completed={queue['completed_jobs']}, failed={queue['failed_jobs']}, "
+                f"cancelled={queue['cancelled_jobs']}, recovered={queue['recovered_jobs']}, "
+                f"dropped={queue['dropped_jobs']}, avg_latency={queue['average_latency_seconds']}s"
+            ),
+            f"queue_last_error: {queue['last_error'] or '-'}",
+            (
+                "reliability: "
+                f"circuit={queue['circuit_state']}, failures={queue['circuit_failures']}, "
+                f"retry_after={queue['circuit_retry_after_seconds']}s, attempts={queue['attempts']}, "
+                f"retries={queue['retries']}, rpm={queue['rate_limit_rpm']}, "
+                f"limiter_waits={queue['rate_limit_wait_count']}"
+            ),
+            (
+                "jobs: "
+                f"persistence={queue['persistence_enabled']}, recovery_age={queue['recovery_max_age_hours']}h, "
+                f"audio_cleanup={queue['audio_cleanup']}"
+            ),
+            f"platforms: {queue['platforms'] or 'unknown (send will be attempted)'}",
             f"auto_tts: {self.plugin_config.auto_tts_enabled}, probability={self.plugin_config.auto_tts_probability}",
             f"auto_tts_access: {self._auto_tts_access_preview()['summary']}",
             f"file_fallback: {self.plugin_config.file_fallback_enabled}",
@@ -913,5 +1356,62 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         ]
         yield event.plain_result("\n".join(lines))
 
+    @filter.command("tts任务", alias={"tts任務"})
+    async def tasks_command(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result("只有插件管理员可以查看 TTS 任务。")
+            return
+        tasks = self._task_list(limit=20)
+        if not tasks:
+            yield event.plain_result("当前没有 TTS 任务记录。")
+            return
+        lines = ["最近 TTS 任务"]
+        for task in tasks:
+            recovered = " recovered" if task["recovered"] else ""
+            error = f" error={task['error']}" if task["error"] else ""
+            lines.append(
+                f"{task['id']} {task['status']} {task['source']}{recovered} "
+                f"{task['text_preview']}{error}"
+            )
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("tts取消")
+    async def cancel_task_command(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result("只有插件管理员可以取消 TTS 任务。")
+            return
+        job_id = self._tail_any(event.message_str, ("tts取消",)).split(maxsplit=1)[0]
+        if not job_id:
+            yield event.plain_result("用法：/tts取消 <任务 ID>")
+            return
+        cancelled = await self._background_manager().cancel(job_id)
+        yield event.plain_result("任务已取消。" if cancelled else "任务不存在或已经结束。")
+
+    @filter.command("tts清空")
+    async def clear_tasks_command(self, event: AstrMessageEvent):
+        if not self._is_admin(event):
+            yield event.plain_result("只有插件管理员可以清理 TTS 任务。")
+            return
+        argument = self._tail_any(event.message_str, ("tts清空",)).strip().lower()
+        include_active = argument in {"all", "全部", "active"}
+        affected = await self._background_manager().clear(include_active=include_active)
+        scope = "历史记录与活动任务" if include_active else "已结束任务记录"
+        yield event.plain_result(f"已清理{scope}，影响 {affected} 项。")
+
     async def terminate(self):
-        pass
+        manager = self._job_manager
+        self._job_manager = None
+        if manager is not None:
+            await manager.stop(drain_timeout=5.0)
+        client = self._mimo_client
+        self._mimo_client = None
+        self._mimo_client_signature = None
+        if client is not None:
+            await client.close()
+        retired = tuple(self._retired_clients)
+        self._retired_clients.clear()
+        if retired:
+            await asyncio.gather(*(item.close() for item in retired), return_exceptions=True)
+        if self._client_close_tasks:
+            await asyncio.gather(*tuple(self._client_close_tasks), return_exceptions=True)
+            self._client_close_tasks.clear()

@@ -13,6 +13,7 @@
   "model": {
     "type": "string",
     "description": "TTS 模型",
+    "options": ["mimo-v2.5-tts-voiceclone"],
     "default": "mimo-v2.5-tts-voiceclone"
   },
   "output_format": {
@@ -116,7 +117,7 @@
   "segment_threshold_chars": {
     "type": "int",
     "description": "分段阈值字符数",
-    "default": 180
+    "default": 2500
   },
   "segment_max_segments": {
     "type": "int",
@@ -126,7 +127,7 @@
   "max_text_chars": {
     "type": "int",
     "description": "单次 MiMo 请求最大文本长度",
-    "default": 500
+    "default": 2500
   },
   "max_voice_file_mb": {
     "type": "int",
@@ -142,7 +143,90 @@
     "type": "string",
     "description": "回复模式",
     "options": ["audio_only", "text_and_audio", "text_only"],
-    "default": "audio_only"
+    "default": "text_and_audio"
+  },
+  "delivery_mode": {
+    "type": "string",
+    "description": "语音交付模式",
+    "options": ["background", "blocking"],
+    "default": "background"
+  },
+  "background_queue_size": {
+    "type": "int",
+    "description": "后台 TTS 队列容量",
+    "default": 20
+  },
+  "tts_timeout_seconds": {
+    "type": "int",
+    "description": "单次 TTS 请求超时秒数",
+    "default": 120
+  },
+  "tts_max_retries": {
+    "type": "int",
+    "description": "插件对限流和瞬态错误的最大重试次数",
+    "default": 2
+  },
+  "tts_rate_limit_rpm": {
+    "type": "int",
+    "description": "MiMo 请求每分钟速率上限",
+    "default": 90
+  },
+  "tts_retry_backoff_base_seconds": {
+    "type": "float",
+    "description": "瞬态错误指数退避起始秒数",
+    "default": 1.0
+  },
+  "tts_retry_backoff_max_seconds": {
+    "type": "float",
+    "description": "瞬态错误指数退避最大秒数",
+    "default": 15.0
+  },
+  "circuit_failure_threshold": {
+    "type": "int",
+    "description": "连续瞬态失败触发熔断的次数",
+    "default": 5
+  },
+  "circuit_recovery_seconds": {
+    "type": "int",
+    "description": "熔断后进入半开探测的等待秒数",
+    "default": 60
+  },
+  "async_failure_notice": {
+    "type": "string",
+    "description": "后台任务失败通知策略",
+    "options": ["command_only", "always", "never"],
+    "default": "command_only"
+  },
+  "job_persistence_enabled": {
+    "type": "bool",
+    "description": "持久化后台任务并在插件重启后恢复",
+    "default": true
+  },
+  "job_recovery_max_age_hours": {
+    "type": "int",
+    "description": "允许恢复的后台任务最大年龄（小时）",
+    "default": 24
+  },
+  "job_history_size": {
+    "type": "int",
+    "description": "保留的后台任务历史条数",
+    "default": 100
+  },
+  "background_audio_cleanup": {
+    "type": "string",
+    "description": "后台音频发送成功后的清理策略",
+    "options": ["after_delivery", "retention"],
+    "default": "after_delivery"
+  },
+  "platform_preflight_enabled": {
+    "type": "bool",
+    "description": "提交后台任务前检查平台主动消息能力",
+    "default": true
+  },
+  "live_api_test_enabled": {
+    "type": "bool",
+    "description": "允许 Pages 连接诊断执行真实 MiMo 合成请求",
+    "default": false
   },
   "auto_tts_enabled": {
     "type": "bool",

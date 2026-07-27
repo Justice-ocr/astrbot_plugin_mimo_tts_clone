@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+import wave
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -65,6 +66,7 @@ class _Context:
         self.fail_llm = False
         self.fail_llm_empty = False
         self.providers = [_Provider(owner=self)]
+        self.sent_messages = []
         self.provider_manager = types.SimpleNamespace(
             curr_provider_inst=self.providers[0],
             provider_insts=self.providers,
@@ -89,6 +91,10 @@ class _Context:
     def get_using_provider(self, umo=None):
         return self.provider_manager.curr_provider_inst
 
+    async def send_message(self, session, chain):
+        self.sent_messages.append((session, chain))
+        return True
+
 
 def _command_decorator(*_args, **_kwargs):
     def decorate(func):
@@ -111,16 +117,26 @@ def _install_astrbot_stubs():
 
     event = types.ModuleType("astrbot.api.event")
     event.AstrMessageEvent = object
+    event.MessageChain = type(
+        "MessageChain",
+        (),
+        {"__init__": lambda self, chain=None, **_kwargs: setattr(self, "chain", chain or [])},
+    )
     event.filter = types.SimpleNamespace(
         command=_command_decorator,
         llm_tool=_command_decorator,
         on_decorating_result=_command_decorator,
+        on_platform_loaded=_command_decorator,
     )
 
     message_components = types.ModuleType("astrbot.api.message_components")
-    message_components.File = object
+    class _Component:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    message_components.File = type("File", (_Component,), {})
     message_components.Plain = type("Plain", (), {})
-    message_components.Record = object
+    message_components.Record = type("Record", (_Component,), {})
 
     star = types.ModuleType("astrbot.api.star")
     star.Context = _Context
@@ -176,6 +192,139 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertEqual(reloaded.config["api_key"], "mimo-secret")
             self.assertEqual(reloaded.config["max_text_chars"], 321)
 
+    def test_blank_api_key_update_preserves_existing_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {"api_key": "mimo-secret"})
+
+            plugin._update_runtime_config({"api_key": "   ", "delivery_mode": "blocking"})
+
+            self.assertEqual(plugin.config["api_key"], "mimo-secret")
+            self.assertEqual(plugin.config["delivery_mode"], "blocking")
+
+    def test_voice_audio_delete_is_confined_to_reference_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+            outside = Path(tmp) / "outside.wav"
+            outside.write_bytes(b"keep")
+            inside = Path(tmp) / "voice_refs" / "inside.wav"
+            inside.parent.mkdir()
+            inside.write_bytes(b"delete")
+
+            self.assertFalse(plugin._delete_voice_audio_file(outside))
+            self.assertTrue(outside.exists())
+            self.assertTrue(plugin._delete_voice_audio_file(inside))
+            self.assertFalse(inside.exists())
+
+    def test_slow_auto_tts_sends_text_before_background_audio(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                _StarTools.data_dir = tmp
+                context = _Context()
+                timeline = []
+
+                async def active_send(session, chain):
+                    timeline.append(("audio", asyncio.get_running_loop().time(), session, chain))
+                    return True
+
+                context.send_message = active_send
+                plugin = self.module.MimoTTSClonePlugin(
+                    context,
+                    {
+                        "auto_tts_enabled": True,
+                        "auto_tts_probability": 1.0,
+                        "reply_mode": "text_and_audio",
+                        "delivery_mode": "background",
+                    },
+                )
+                output = Path(tmp) / "slow.wav"
+
+                async def slow_synthesis(text, **_kwargs):
+                    self.assertEqual(text, "这是先发送的文字。")
+                    timeline.append(("tts-start", asyncio.get_running_loop().time()))
+                    await asyncio.sleep(3)
+                    output.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+                    timeline.append(("tts-end", asyncio.get_running_loop().time()))
+                    return output
+
+                plugin.synthesize_text = slow_synthesis
+                plain = self.module.Plain()
+                result = types.SimpleNamespace(
+                    chain=[plain],
+                    get_plain_text=lambda: "这是先发送的文字。",
+                    is_llm_result=lambda: True,
+                )
+
+                class Event:
+                    unified_msg_origin = "aiocqhttp:FriendMessage:user-1"
+
+                    def __init__(self):
+                        self.cleared = False
+
+                    def get_sender_id(self):
+                        return "user-1"
+
+                    def get_extra(self, key):
+                        if key == "provider_request":
+                            return types.SimpleNamespace(
+                                conversation=types.SimpleNamespace(cid=self.unified_msg_origin)
+                            )
+                        return None
+
+                    def get_result(self):
+                        return None if self.cleared else result
+
+                    def clear_result(self):
+                        self.cleared = True
+
+                    async def send(self, message):
+                        self.assert_message_chain = message
+                        timeline.append(("text", asyncio.get_running_loop().time()))
+
+                event = Event()
+                started = asyncio.get_running_loop().time()
+                await plugin.auto_tts_reply(event)
+                returned = asyncio.get_running_loop().time()
+
+                self.assertLess(returned - started, 0.5)
+                self.assertTrue(event.cleared)
+                self.assertEqual([item[0] for item in timeline], ["text"])
+
+                await asyncio.wait_for(plugin._job_manager._idle.wait(), timeout=4.0)
+                self.assertEqual(
+                    [item[0] for item in timeline],
+                    ["text", "tts-start", "tts-end", "audio"],
+                )
+                self.assertEqual(timeline[-1][2], event.unified_msg_origin)
+                self.assertEqual(plugin._queue_snapshot()["completed_jobs"], 1)
+
+                manager = plugin._job_manager
+                await plugin.terminate()
+                self.assertIsNone(plugin._job_manager)
+                self.assertEqual(manager._workers, [])
+
+        asyncio.run(scenario())
+
+    def test_plugin_reuses_client_and_closes_it_on_terminate(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                _StarTools.data_dir = tmp
+                plugin = self.module.MimoTTSClonePlugin(_Context(), {"api_key": "token"})
+                client = plugin._client()
+                self.assertIs(plugin._client(), client)
+                closed = []
+
+                async def close():
+                    closed.append(True)
+
+                client.close = close
+                await plugin.terminate()
+                self.assertEqual(closed, [True])
+                self.assertIsNone(plugin._mimo_client)
+
+        asyncio.run(scenario())
+
     def test_pages_lists_astrbot_ai_providers(self):
         with tempfile.TemporaryDirectory() as tmp:
             _StarTools.data_dir = tmp
@@ -201,6 +350,43 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertTrue(payload["readiness"]["voices"])
             self.assertTrue(payload["readiness"]["ai_director"])
             self.assertEqual(payload["readiness"]["providers"], 1)
+
+    def test_v060_pages_task_routes_are_registered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            context = _Context()
+            self.module.MimoTTSClonePlugin(context, {})
+
+            route_names = {Path(route[0]).name for route in context.routes}
+            self.assertTrue(
+                {"get_tts_tasks", "cancel_tts_task", "clear_tts_tasks"}.issubset(
+                    route_names
+                )
+            )
+
+    def test_live_pages_connection_test_is_opt_in(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                _StarTools.data_dir = tmp
+                plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+                payload, status = await plugin._pages_test_connection()
+                self.assertEqual(status, 403)
+                self.assertFalse(payload["success"])
+                self.assertIn("真实 MiMo 联调未启用", payload["error"])
+                await plugin.terminate()
+
+        asyncio.run(scenario())
+
+    def test_pages_payload_never_returns_api_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {"api_key": "mimo-secret"})
+
+            payload = plugin._pages_payload()
+
+            self.assertNotIn("api_key", payload["config"])
+            self.assertTrue(payload["readiness"]["api_key"])
+            self.assertEqual(payload["config"]["api_key_masked"], "********cret")
 
     def test_plugin_reads_get_only_native_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,7 +420,8 @@ class ConfigPersistenceTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(cfg["reply_mode"], "audio_only")
+        self.assertEqual(cfg["reply_mode"], "text_and_audio")
+        self.assertEqual(cfg["delivery_mode"], "background")
         self.assertTrue(cfg["auto_tts_enabled"])
         self.assertEqual(cfg["auto_tts_probability"], 1.0)
         self.assertFalse(cfg["file_fallback_enabled"])
@@ -324,7 +511,48 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertTrue(mid.exists())
             self.assertTrue(new.exists())
 
-    def test_text_to_speech_returns_first_output_path_for_generic_callers(self):
+    def test_cleanup_outputs_never_touches_in_progress_parts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(
+                _Context(),
+                {"output_retention_days": 0, "output_max_files": 1},
+            )
+            output_dir = Path(tmp) / "outputs"
+            output_dir.mkdir()
+            (output_dir / "mimo_tts_1.wav").write_bytes(b"final")
+            part_wav = output_dir / "mimo_tts_2.part000.wav"
+            sdk_part = output_dir / "mimo_tts_2.part000.wav.part"
+            part_wav.write_bytes(b"in progress")
+            sdk_part.write_bytes(b"in progress")
+
+            plugin._cleanup_outputs()
+
+            self.assertTrue(part_wav.exists())
+            self.assertTrue(sdk_part.exists())
+
+    def test_cleanup_outputs_preserves_wav_waiting_for_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(
+                _Context(), {"output_retention_days": 0, "output_max_files": 1}
+            )
+            output_dir = Path(tmp) / "outputs"
+            output_dir.mkdir()
+            protected = output_dir / "mimo_tts_1.wav"
+            newer = output_dir / "mimo_tts_2.wav"
+            protected.write_bytes(b"protected")
+            newer.write_bytes(b"newer")
+            plugin._job_manager = types.SimpleNamespace(
+                protected_output_paths=lambda: {protected.resolve()}
+            )
+
+            plugin._cleanup_outputs()
+
+            self.assertTrue(protected.exists())
+            self.assertTrue(newer.exists())
+
+    def test_text_to_speech_returns_complete_output_path_for_generic_callers(self):
         with tempfile.TemporaryDirectory() as tmp:
             _StarTools.data_dir = tmp
             plugin = self.module.MimoTTSClonePlugin(_Context(), {})
@@ -333,7 +561,7 @@ class ConfigPersistenceTests(unittest.TestCase):
                 self.assertEqual(text, "hello")
                 self.assertEqual(kwargs["emotion"], "happy")
                 self.assertEqual(kwargs["group_id"], "aiocqhttp:FriendMessage:123")
-                return [Path(tmp) / "voice.wav"]
+                return Path(tmp) / "voice.wav"
 
             plugin.synthesize_text = fake_synthesize_text
             result = asyncio.run(
@@ -345,6 +573,68 @@ class ConfigPersistenceTests(unittest.TestCase):
             )
 
             self.assertEqual(result, str(Path(tmp) / "voice.wav"))
+
+    def test_segmented_synthesis_returns_one_merged_wav_and_cleans_parts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(
+                _Context(),
+                {"max_text_chars": 5, "segment_threshold_chars": 5, "segment_max_segments": 4},
+            )
+            voice_path = Path(tmp) / "voice.wav"
+            with wave.open(str(voice_path), "wb") as target:
+                target.setnchannels(1)
+                target.setsampwidth(2)
+                target.setframerate(8000)
+                target.writeframes(b"\0\0" * 2)
+            plugin.voice_store.add_voice("test", voice_path, "", "test", True)
+            plugin._voice_data_url = lambda _voice: asyncio.sleep(0, result="data:audio/wav;base64,AAAA")
+
+            async def fake_part(_text, _voice, **kwargs):
+                output = kwargs["output_path"]
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with wave.open(str(output), "wb") as target:
+                    target.setnchannels(1)
+                    target.setsampwidth(2)
+                    target.setframerate(8000)
+                    target.writeframes(b"\1\0" * 3)
+                return output
+
+            plugin._synthesize_text_to_file = fake_part
+            output = asyncio.run(plugin.synthesize_text("1234567890"))
+
+            self.assertIsInstance(output, Path)
+            with wave.open(str(output), "rb") as merged:
+                self.assertEqual(merged.getnframes(), 6)
+            self.assertEqual(list((Path(tmp) / "outputs").glob("*.part*")), [])
+
+    def test_segment_failure_removes_partial_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(
+                _Context(),
+                {"max_text_chars": 5, "segment_threshold_chars": 5, "segment_max_segments": 4},
+            )
+            voice_path = Path(tmp) / "voice.wav"
+            voice_path.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+            plugin.voice_store.add_voice("test", voice_path, "", "test", True)
+            plugin._voice_data_url = lambda _voice: asyncio.sleep(0, result="data:audio/wav;base64,AAAA")
+            calls = 0
+
+            async def fake_part(_text, _voice, **kwargs):
+                nonlocal calls
+                calls += 1
+                output = kwargs["output_path"]
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(b"partial")
+                if calls == 2:
+                    raise RuntimeError("second segment failed")
+                return output
+
+            plugin._synthesize_text_to_file = fake_part
+            with self.assertRaisesRegex(RuntimeError, "second segment failed"):
+                asyncio.run(plugin.synthesize_text("1234567890"))
+            self.assertEqual(list((Path(tmp) / "outputs").glob("*")), [])
 
     def test_auto_tts_scope_whitelist_and_blacklist(self):
         with tempfile.TemporaryDirectory() as tmp:

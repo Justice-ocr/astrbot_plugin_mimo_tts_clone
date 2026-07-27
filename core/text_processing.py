@@ -12,6 +12,10 @@ _WHITESPACE_RE = re.compile(r"[ \t\r\n]+")
 _SENTENCE_RE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?", re.MULTILINE)
 
 
+class TextSegmentationError(ValueError):
+    """Raised when text cannot fit within the configured segment budget."""
+
+
 def clean_tts_text(text: str) -> str:
     content = str(text or "")
     if not content:
@@ -47,10 +51,19 @@ def split_tts_text(
     raw_parts = [part for part in raw_parts if part]
     if not raw_parts:
         raw_parts = [content]
+    bounded_parts: list[str] = []
+    for part in raw_parts:
+        if len(part) <= max_chars:
+            bounded_parts.append(part)
+            continue
+        bounded_parts.extend(
+            part[index : index + max_chars]
+            for index in range(0, len(part), max_chars)
+        )
 
     segments: list[str] = []
     current = ""
-    for part in raw_parts:
+    for part in bounded_parts:
         if not current:
             current = part
             continue
@@ -63,8 +76,8 @@ def split_tts_text(
         segments.append(current)
 
     if max_segments > 0 and len(segments) > max_segments:
-        head = segments[: max_segments - 1]
-        tail = "".join(segments[max_segments - 1 :])
-        segments = [*head, tail]
+        raise TextSegmentationError(
+            f"Text requires {len(segments)} segments, exceeding the configured maximum of {max_segments}."
+        )
 
     return segments

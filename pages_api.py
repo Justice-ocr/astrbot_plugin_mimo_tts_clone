@@ -17,6 +17,31 @@ from .core.text_processing import clean_tts_text
 
 
 class PagesAPIMixin:
+    def _usable_voice(self, voice_id: str):
+        voice = self.voice_store.get_voice(voice_id)
+        if voice is None or not voice.enabled or not voice.consent_confirmed:
+            return None
+        return voice
+
+    def _delete_voice_audio_file(self, audio_path: str | pathlib.Path) -> bool:
+        reference_root = (pathlib.Path(self.data_dir) / "voice_refs").resolve()
+        resolved = pathlib.Path(audio_path).resolve()
+        if not resolved.is_relative_to(reference_root):
+            self.logger.warning(
+                "[mimo-tts] refused to delete voice file outside voice_refs: %s",
+                resolved,
+            )
+            return False
+        resolved.unlink(missing_ok=True)
+        return True
+
+    def _public_config(self) -> dict:
+        config = {key: value for key, value in self.config.items() if key != "api_key"}
+        api_key = str(self.plugin_config.api_key or "")
+        config["api_key_masked"] = f"********{api_key[-4:]}" if api_key else ""
+        config["api_key_configured"] = bool(api_key)
+        return config
+
     @staticmethod
     def _pages_error(message: str, status: int = 400, detail: str = ""):
         payload = {"success": False, "error": message}
@@ -32,6 +57,10 @@ class PagesAPIMixin:
         plugin_id = "astrbot_plugin_mimo_tts_clone"
         routes = [
             ("get_config", self._pages_get_config, ["GET"], "获取 MiMo TTS 配置"),
+            ("get_queue_status", self._pages_get_queue_status, ["GET"], "获取后台 TTS 队列状态"),
+            ("get_tts_tasks", self._pages_get_tts_tasks, ["GET"], "获取后台 TTS 任务"),
+            ("cancel_tts_task", self._pages_cancel_tts_task, ["POST"], "取消后台 TTS 任务"),
+            ("clear_tts_tasks", self._pages_clear_tts_tasks, ["POST"], "清理后台 TTS 任务"),
             ("save_config", self._pages_save_config, ["POST"], "保存 MiMo TTS 配置"),
             ("list_voices", self._pages_list_voices, ["GET"], "列出音色"),
             ("list_ai_providers", self._pages_list_ai_providers, ["GET"], "列出 AstrBot AI 服务商"),
@@ -49,15 +78,17 @@ class PagesAPIMixin:
 
     def _pages_payload(self) -> dict:
         voices = self.voice_store.list_voices()
-        enabled_voices = [voice for voice in voices if voice.enabled]
+        enabled_voices = [voice for voice in voices if voice.enabled and voice.consent_confirmed]
         providers = self._list_ai_providers()
         return {
             "success": True,
-            "config": dict(self.config),
+            "config": self._public_config(),
             "voices": [voice.to_dict() for voice in voices],
             "defaults": self.voice_store.defaults(),
             "emotions": list(SUPPORTED_EMOTIONS),
             "access_control": self._auto_tts_access_preview(),
+            "queue_status": self._queue_snapshot(),
+            "tasks": self._task_list(),
             "readiness": {
                 "api_key": bool(self.plugin_config.api_key),
                 "voices": bool(enabled_voices),
@@ -72,10 +103,54 @@ class PagesAPIMixin:
     async def _pages_get_config(self):
         return jsonify(self._pages_payload())
 
+    async def _pages_get_queue_status(self):
+        return jsonify({"success": True, "queue_status": self._queue_snapshot()})
+
+    async def _pages_get_tts_tasks(self):
+        return jsonify(
+            {
+                "success": True,
+                "tasks": self._task_list(),
+                "queue_status": self._queue_snapshot(),
+            }
+        )
+
+    async def _pages_cancel_tts_task(self):
+        data = await request.get_json(force=True) or {}
+        job_id = str(data.get("job_id") or data.get("id") or "").strip()
+        if not job_id:
+            return self._pages_error("缺少 job_id")
+        cancelled = await self._background_manager().cancel(job_id)
+        if not cancelled:
+            return self._pages_error("任务不存在或已经结束", 404)
+        return jsonify(
+            {
+                "success": True,
+                "tasks": self._task_list(),
+                "queue_status": self._queue_snapshot(),
+            }
+        )
+
+    async def _pages_clear_tts_tasks(self):
+        data = await request.get_json(force=True) or {}
+        include_active = bool(data.get("include_active", False))
+        affected = await self._background_manager().clear(include_active=include_active)
+        return jsonify(
+            {
+                "success": True,
+                "affected": affected,
+                "tasks": self._task_list(),
+                "queue_status": self._queue_snapshot(),
+            }
+        )
+
     async def _pages_save_config(self):
         data = await request.get_json(force=True) or {}
         if not isinstance(data, dict):
             return jsonify({"success": False, "error": "Invalid JSON payload"}), 400
+        data = dict(data)
+        if not str(data.get("api_key") or "").strip():
+            data.pop("api_key", None)
         persisted = self._update_runtime_config(data)
         if not persisted.get("local") and not persisted.get("native"):
             return jsonify(
@@ -85,7 +160,7 @@ class PagesAPIMixin:
                     "detail": persisted.get("warning") or "",
                 }
             ), 500
-        response = {"success": True, "config": dict(self.config), "persisted": persisted}
+        response = {"success": True, "config": self._public_config(), "persisted": persisted}
         if persisted.get("warning"):
             response["warning"] = "配置已保存到插件本地文件，但 AstrBot 原生配置同步失败。"
             response["detail"] = persisted["warning"]
@@ -249,15 +324,15 @@ class PagesAPIMixin:
         voice = self.voice_store.get_voice(voice_id)
         deleted = self.voice_store.delete_voice(voice_id)
         if voice is not None:
-            pathlib.Path(voice.audio_path).unlink(missing_ok=True)
+            self._delete_voice_audio_file(voice.audio_path)
         return jsonify({"success": deleted, "defaults": self.voice_store.defaults()})
 
     async def _pages_set_default_voice(self):
         data = await request.get_json(force=True) or {}
         scope = str(data.get("scope") or "global").strip().lower()
         voice_id = str(data.get("voice_id") or "").strip()
-        if self.voice_store.get_voice(voice_id) is None:
-            return jsonify({"success": False, "error": "音色不存在"}), 404
+        if self._usable_voice(voice_id) is None:
+            return jsonify({"success": False, "error": "音色不存在、未启用或未确认授权"}), 404
         if scope == "user":
             self.voice_store.set_user_default(str(data.get("user_id") or ""), voice_id)
         elif scope == "group":
@@ -275,8 +350,8 @@ class PagesAPIMixin:
         if not voice_id:
             self.voice_store.set_emotion_default(emotion, "")
             return jsonify({"success": True, "defaults": self.voice_store.defaults()})
-        if self.voice_store.get_voice(voice_id) is None:
-            return jsonify({"success": False, "error": "音色不存在"}), 404
+        if self._usable_voice(voice_id) is None:
+            return jsonify({"success": False, "error": "音色不存在、未启用或未确认授权"}), 404
         self.voice_store.set_emotion_default(emotion, voice_id)
         return jsonify({"success": True, "defaults": self.voice_store.defaults()})
 
@@ -295,7 +370,7 @@ class PagesAPIMixin:
             return jsonify({"success": False, "error": "没有可用音色"}), 400
 
         try:
-            outputs = await self.synthesize_text(
+            output_path = await self.synthesize_text(
                 text,
                 voice_id=voice.id,
                 emotion=emotion,
@@ -313,7 +388,6 @@ class PagesAPIMixin:
             return self._pages_error(f"MiMo 试听生成失败：{message}", 502, message)
         except Exception as exc:
             return self._pages_error(f"试听生成异常：{exc}", 502, str(exc))
-        output_path = outputs[0]
         raw = await asyncio.to_thread(pathlib.Path(output_path).read_bytes)
         return jsonify(
             {
@@ -325,6 +399,11 @@ class PagesAPIMixin:
         )
 
     async def _pages_test_connection(self):
+        if not self.plugin_config.live_api_test_enabled:
+            return self._pages_error(
+                "真实 MiMo 联调未启用，请先打开“允许执行真实 MiMo 联调测试”并保存配置。",
+                403,
+            )
         data = await request.get_json(force=True) or {}
         text = clean_tts_text(str(data.get("text") or "连接测试，声音工作正常。"))
         voice_selector = str(data.get("voice_id") or data.get("voice") or "").strip()
@@ -334,7 +413,7 @@ class PagesAPIMixin:
             return self._pages_error("暂无可用音色，请先上传参考音频。", 400)
         started = asyncio.get_running_loop().time()
         try:
-            outputs = await self.synthesize_text(
+            output = await self.synthesize_text(
                 text,
                 voice_id=voice_selector or None,
                 split=False,
@@ -342,8 +421,7 @@ class PagesAPIMixin:
         except Exception as exc:
             return self._pages_error(f"连接测试失败：{exc}", 502, str(exc))
         elapsed_ms = round((asyncio.get_running_loop().time() - started) * 1000)
-        for output in outputs:
-            pathlib.Path(output).unlink(missing_ok=True)
+        pathlib.Path(output).unlink(missing_ok=True)
         return jsonify(
             {
                 "success": True,

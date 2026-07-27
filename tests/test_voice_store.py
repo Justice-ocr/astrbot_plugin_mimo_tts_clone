@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,41 @@ from astrbot_plugin_mimo_tts_clone.core.voice_store import VoiceStore
 
 
 class VoiceStoreTests(unittest.TestCase):
+    def test_unconsented_voice_cannot_be_added_or_resolved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = VoiceStore(root)
+            with self.assertRaises(ValueError):
+                store.add_voice("unconsented", root / "voice.wav", "", "admin", False)
+
+            store._state["voices"].append({
+                "id": "legacy",
+                "name": "legacy",
+                "audio_path": str(root / "legacy.wav"),
+                "description": "",
+                "created_by": "",
+                "created_at": "",
+                "enabled": True,
+                "consent_confirmed": False,
+            })
+            store.set_global_default("legacy")
+            self.assertEqual(store.get_voice("legacy").id, "legacy")
+            self.assertEqual(store.list_voices(include_disabled=False), [])
+            self.assertIsNone(store.resolve_voice_id(None, "user", "group"))
+    def test_save_is_atomic_and_keeps_previous_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = VoiceStore(root)
+            first = store.add_voice("first", root / "first.wav", "", "admin", True)
+            previous = json.loads((root / "voices.json").read_text(encoding="utf-8"))
+
+            store.update_voice(first.id, description="updated")
+
+            backup = json.loads((root / "voices.json.bak").read_text(encoding="utf-8"))
+            current = json.loads((root / "voices.json").read_text(encoding="utf-8"))
+            self.assertEqual(backup, previous)
+            self.assertEqual(current["voices"][0]["description"], "updated")
+            self.assertFalse((root / "voices.json.tmp").exists())
     def test_voice_store_adds_and_lists_voice(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

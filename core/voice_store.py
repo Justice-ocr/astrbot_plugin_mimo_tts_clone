@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -72,15 +73,24 @@ class VoiceStore:
 
     def save(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(self._state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        backup = self.path.with_suffix(self.path.suffix + ".bak")
+        try:
+            temporary.write_text(
+                json.dumps(self._state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            if self.path.is_file():
+                shutil.copyfile(self.path, backup)
+            temporary.replace(self.path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def list_voices(self, *, include_disabled: bool = True) -> list[VoiceProfile]:
         voices = [VoiceProfile.from_dict(item) for item in self._state["voices"]]
         if not include_disabled:
-            voices = [voice for voice in voices if voice.enabled]
+            voices = [voice for voice in voices if voice.enabled and voice.consent_confirmed]
         return voices
 
     def get_voice(self, voice_id: str) -> VoiceProfile | None:
@@ -114,6 +124,8 @@ class VoiceStore:
         style_tags: str = "",
         emotion: str = "",
     ) -> VoiceProfile:
+        if not consent_confirmed:
+            raise ValueError("Voice consent must be explicitly confirmed.")
         voice_id = f"voice_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         voice = VoiceProfile(
             id=voice_id,

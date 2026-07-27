@@ -63,12 +63,15 @@ async def store_voice_sample(
     style_context = _metadata_get(metadata, "style_context").strip()
     style_tags = _metadata_get(metadata, "style_tags").strip()
     emotion = normalize_emotion(_metadata_get(metadata, "emotion")) or ""
-    consent = _metadata_get(metadata, "consent_confirmed", "true").lower() in {
+    consent = _metadata_get(metadata, "consent_confirmed", "").lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+    if not consent:
+        save_path.unlink(missing_ok=True)
+        raise AudioValidationError("上传音色前必须明确确认已获得声音授权")
     return voice_store.add_voice(
         name,
         save_path,

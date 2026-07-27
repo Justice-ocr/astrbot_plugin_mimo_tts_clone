@@ -57,6 +57,8 @@ let state = {
   providers: [],
   readiness: {},
   accessControl: {},
+  queueStatus: {},
+  tasks: [],
 };
 let lastUploadedVoiceId = '';
 
@@ -139,16 +141,35 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+function isVoiceUsable(voice) {
+  return Boolean(voice && voice.enabled !== false && voice.consent_confirmed === true);
+}
+
 function configPayload() {
   return {
     api_key: $('api-key').value.trim(),
     base_url: $('base-url').value.trim(),
-    model: $('model').value.trim(),
     default_context: $('default-context').value,
-    max_text_chars: Number($('max-text-chars').value || 500),
+    max_text_chars: Number($('max-text-chars').value || 2500),
     max_concurrency: Number($('max-concurrency').value || 1),
     max_voice_file_mb: Number($('max-voice-file-mb').value || 10),
     reply_mode: $('reply-mode').value,
+    delivery_mode: $('delivery-mode').value,
+    background_queue_size: Number($('background-queue-size').value || 20),
+    tts_timeout_seconds: Number($('tts-timeout-seconds').value || 120),
+    tts_max_retries: Number($('tts-max-retries').value || 2),
+    tts_rate_limit_rpm: Number($('tts-rate-limit-rpm').value || 90),
+    tts_retry_backoff_base_seconds: Number($('tts-retry-backoff-base-seconds').value || 1),
+    tts_retry_backoff_max_seconds: Number($('tts-retry-backoff-max-seconds').value || 15),
+    circuit_failure_threshold: Number($('circuit-failure-threshold').value || 5),
+    circuit_recovery_seconds: Number($('circuit-recovery-seconds').value || 60),
+    async_failure_notice: $('async-failure-notice').value,
+    job_persistence_enabled: $('job-persistence-enabled').checked,
+    job_recovery_max_age_hours: Number($('job-recovery-max-age-hours').value || 24),
+    job_history_size: Number($('job-history-size').value || 100),
+    background_audio_cleanup: $('background-audio-cleanup').value,
+    platform_preflight_enabled: $('platform-preflight-enabled').checked,
+    live_api_test_enabled: $('live-api-test-enabled').checked,
     auto_tts_enabled: $('auto-tts-enabled').checked,
     auto_tts_probability: Number($('auto-tts-probability').value || 0),
     auto_tts_group_whitelist: $('auto-tts-group-whitelist').value,
@@ -169,7 +190,7 @@ function configPayload() {
     ai_style_director_fallback_to_emotion: $('ai-style-director-fallback').checked,
     ai_style_director_debug_log: $('ai-style-director-debug-log').checked,
     segment_enabled: $('segment-enabled').checked,
-    segment_threshold_chars: Number($('segment-threshold-chars').value || 180),
+    segment_threshold_chars: Number($('segment-threshold-chars').value || 2500),
     segment_max_segments: Number($('segment-max-segments').value || 6),
   };
 }
@@ -222,11 +243,110 @@ function updateStatus() {
   $('emotion-status').textContent = state.config.emotion_routing_enabled === false ? 'OFF' : 'ON';
   $('segment-status').textContent = state.config.segment_enabled === false ? 'OFF' : 'ON';
   $('hero-voice-count').textContent = String(state.voices.length);
+  const queue = state.queueStatus || {};
+  const lastError = queue.last_error ? ` · 最近错误 ${queue.last_error}` : '';
+  $('queue-status').textContent = `队列 ${queue.queued_jobs || 0} · 运行 ${queue.running_jobs || 0} · 完成 ${queue.completed_jobs || 0} · 失败 ${queue.failed_jobs || 0} · 取消 ${queue.cancelled_jobs || 0} · 恢复 ${queue.recovered_jobs || 0} · 丢弃 ${queue.dropped_jobs || 0} · 平均 ${queue.average_latency_seconds || 0}s${lastError}`;
+  renderRuntimeDiagnostics();
+}
+
+async function refreshQueueStatus() {
+  if (!bridge) return;
+  try {
+    const payload = await bridge.apiGet('get_tts_tasks');
+    if (!payload || payload.success === false) return;
+    state.queueStatus = payload.queue_status || {};
+    state.tasks = payload.tasks || [];
+    updateStatus();
+    renderTasks();
+  } catch (_error) {
+    // Queue polling is best-effort and must not disturb configuration editing.
+  }
+}
+
+function renderRuntimeDiagnostics() {
+  const queue = state.queueStatus || {};
+  const circuit = String(queue.circuit_state || 'closed').toUpperCase();
+  $('circuit-state').textContent = circuit;
+  $('circuit-state').className = `soft-pill circuit-${String(queue.circuit_state || 'closed')}`;
+  const platforms = queue.platforms || [];
+  const platformText = platforms.length
+    ? platforms.map(item => `${item.name || item.id}: ${item.proactive ? '主动消息可用' : '不支持主动消息'}`).join('；')
+    : '平台能力未知，运行时会尝试发送';
+  const diagnostics = [
+    ['请求', `${queue.attempts || 0} 次，重试 ${queue.retries || 0} 次`],
+    ['限流', `${queue.rate_limit_rpm || 0} RPM，等待 ${queue.rate_limit_wait_count || 0} 次`],
+    ['熔断', `${circuit}，连续失败 ${queue.circuit_failures || 0}，恢复等待 ${queue.circuit_retry_after_seconds || 0}s`],
+    ['任务存储', queue.persistence_enabled ? `已启用，最长恢复 ${queue.recovery_max_age_hours || 0}h` : '未启用'],
+    ['音频清理', queue.audio_cleanup === 'retention' ? '按保留策略' : '发送成功后删除'],
+    ['平台', platformText],
+  ];
+  $('runtime-diagnostics').innerHTML = diagnostics.map(([label, value]) => `
+    <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></div>
+  `).join('');
+}
+
+function renderTasks() {
+  const tasks = state.tasks || [];
+  $('task-empty').hidden = tasks.length > 0;
+  $('task-list').innerHTML = tasks.map(task => {
+    const active = ['queued', 'running', 'delivering'].includes(task.status);
+    const recovered = task.recovered ? '<span class="task-flag">恢复</span>' : '';
+    const error = task.error ? `<small class="task-error">${escapeHtml(task.error)}</small>` : '';
+    return `
+      <tr>
+        <td><span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>${recovered}</td>
+        <td><code>${escapeHtml(task.id)}</code></td>
+        <td>${escapeHtml(task.source)}</td>
+        <td class="task-session">${escapeHtml(task.session)}</td>
+        <td><span>${escapeHtml(task.text_preview)}</span>${error}</td>
+        <td>${active ? `<button class="task-cancel" data-job-id="${escapeHtml(task.id)}">取消</button>` : ''}</td>
+      </tr>`;
+  }).join('');
+}
+
+async function cancelTask(jobId) {
+  const result = await bridge.apiPost('cancel_tts_task', { job_id: jobId });
+  if (!result.success) throw new Error(result.error || '取消任务失败');
+  state.tasks = result.tasks || [];
+  state.queueStatus = result.queue_status || {};
+  updateStatus();
+  renderTasks();
+  toast(`任务 ${jobId} 已取消`);
+}
+
+async function clearTasks(includeActive) {
+  const result = await bridge.apiPost('clear_tts_tasks', { include_active: includeActive });
+  if (!result.success) throw new Error(result.error || '清理任务失败');
+  state.tasks = result.tasks || [];
+  state.queueStatus = result.queue_status || {};
+  updateStatus();
+  renderTasks();
+  toast(`已处理 ${result.affected || 0} 项任务`);
+}
+
+function resetCancelAllConfirmation() {
+  const button = $('cancel-all-tasks');
+  clearTimeout(button._confirmTimeout);
+  button.dataset.confirming = 'false';
+  button.textContent = '取消全部';
+}
+
+async function confirmCancelAllTasks() {
+  const button = $('cancel-all-tasks');
+  if (button.dataset.confirming !== 'true') {
+    button.dataset.confirming = 'true';
+    button.textContent = '再次点击确认';
+    button._confirmTimeout = setTimeout(resetCancelAllConfirmation, 3000);
+    toast('再次点击将取消排队和运行中的全部任务', 'warn');
+    return;
+  }
+  resetCancelAllConfirmation();
+  await clearTasks(true);
 }
 
 function renderReadiness() {
   const readiness = state.readiness || {};
-  const enabledVoices = state.voices.filter(voice => voice.enabled !== false).length;
+  const enabledVoices = state.voices.filter(isVoiceUsable).length;
   const hasPreviewText = Boolean($('preview-text').value.trim());
   const hasPreviewVoice = Boolean($('preview-voice').value);
   const previewReady = Boolean(enabledVoices && hasPreviewText && hasPreviewVoice);
@@ -302,7 +422,7 @@ function renderAccessControl() {
 }
 
 function previewDisabledReason() {
-  if (!state.voices.some(voice => voice.enabled !== false)) return '需要先上传并启用音色。';
+  if (!state.voices.some(isVoiceUsable)) return '需要先上传并启用已授权音色。';
   if (!$('preview-voice').value) return '请选择一个试听音色。';
   if (!$('preview-text').value.trim()) return '请输入试听文本。';
   return '准备中，请稍候。';
@@ -326,11 +446,12 @@ function updateActionAvailability() {
   }
 
   const canPreview = Boolean(
-    state.voices.some(voice => voice.enabled !== false) &&
+    state.voices.some(isVoiceUsable) &&
     $('preview-text').value.trim() &&
     $('preview-voice').value
   );
   $('preview-btn').disabled = !canPreview;
+  $('test-connection').disabled = !$('live-api-test-enabled').checked;
   setPreviewHint(
     canPreview
       ? '试听已就绪；开启 AI 导演时，这次试听也会走隐藏导演链路。'
@@ -347,15 +468,33 @@ function applyState(payload) {
   state.emotions = payload.emotions || state.emotions;
   state.readiness = payload.readiness || {};
   state.accessControl = payload.access_control || {};
+  state.queueStatus = payload.queue_status || {};
+  state.tasks = payload.tasks || [];
 
-  $('api-key').value = state.config.api_key || '';
+  $('api-key').value = '';
   $('base-url').value = state.config.base_url || 'https://api.xiaomimimo.com/v1';
   $('model').value = state.config.model || 'mimo-v2.5-tts-voiceclone';
   $('default-context').value = state.config.default_context || '';
-  $('max-text-chars').value = state.config.max_text_chars || 500;
+  $('max-text-chars').value = state.config.max_text_chars || 2500;
   $('max-concurrency').value = state.config.max_concurrency || 1;
   $('max-voice-file-mb').value = state.config.max_voice_file_mb || 10;
-  $('reply-mode').value = state.config.reply_mode || 'audio_only';
+  $('reply-mode').value = state.config.reply_mode || 'text_and_audio';
+  $('delivery-mode').value = state.config.delivery_mode || 'background';
+  $('background-queue-size').value = state.config.background_queue_size || 20;
+  $('tts-timeout-seconds').value = state.config.tts_timeout_seconds || 120;
+  $('tts-max-retries').value = state.config.tts_max_retries ?? 2;
+  $('tts-rate-limit-rpm').value = state.config.tts_rate_limit_rpm ?? 90;
+  $('tts-retry-backoff-base-seconds').value = state.config.tts_retry_backoff_base_seconds ?? 1;
+  $('tts-retry-backoff-max-seconds').value = state.config.tts_retry_backoff_max_seconds ?? 15;
+  $('circuit-failure-threshold').value = state.config.circuit_failure_threshold ?? 5;
+  $('circuit-recovery-seconds').value = state.config.circuit_recovery_seconds ?? 60;
+  $('async-failure-notice').value = state.config.async_failure_notice || 'command_only';
+  $('job-persistence-enabled').checked = state.config.job_persistence_enabled !== false;
+  $('job-recovery-max-age-hours').value = state.config.job_recovery_max_age_hours ?? 24;
+  $('job-history-size').value = state.config.job_history_size ?? 100;
+  $('background-audio-cleanup').value = state.config.background_audio_cleanup || 'after_delivery';
+  $('platform-preflight-enabled').checked = state.config.platform_preflight_enabled !== false;
+  $('live-api-test-enabled').checked = state.config.live_api_test_enabled === true;
   $('auto-tts-enabled').checked = state.config.auto_tts_enabled === true;
   $('auto-tts-probability').value = state.config.auto_tts_probability ?? 0;
   $('auto-tts-group-whitelist').value = (state.config.auto_tts_group_whitelist || []).join('\n');
@@ -377,12 +516,13 @@ function applyState(payload) {
   $('ai-style-director-fallback').checked = state.config.ai_style_director_fallback_to_emotion !== false;
   $('ai-style-director-debug-log').checked = state.config.ai_style_director_debug_log !== false;
   $('segment-enabled').checked = state.config.segment_enabled !== false;
-  $('segment-threshold-chars').value = state.config.segment_threshold_chars || 180;
+  $('segment-threshold-chars').value = state.config.segment_threshold_chars || 2500;
   $('segment-max-segments').value = state.config.segment_max_segments || 6;
 
   fillEmotionSelect($('voice-emotion'), true);
   fillEmotionSelect($('preview-emotion'), true);
   updateStatus();
+  renderTasks();
   renderEmotionDefaults();
   renderVoices();
   renderReadiness();
@@ -399,7 +539,7 @@ function renderEmotionDefaults() {
   state.emotions.forEach(emotion => {
     const selected = defaults[emotion] || '';
     const options = ['<option value="">未设置</option>'].concat(
-      state.voices.map(voice => (
+      state.voices.filter(isVoiceUsable).map(voice => (
         `<option value="${voice.id}" ${voice.id === selected ? 'selected' : ''}>${escapeHtml(voice.name)}</option>`
       ))
     ).join('');
@@ -431,7 +571,7 @@ function renderVoices() {
 
   state.voices.forEach(voice => {
     const isDefault = voice.id === state.defaults.global_default_voice_id;
-    const disabled = !voice.enabled;
+    const disabled = !isVoiceUsable(voice);
     const emotionDefaults = Object.entries(state.defaults.emotion_defaults || {})
       .filter(([, voiceId]) => voiceId === voice.id)
       .map(([emotion]) => emotion);
@@ -445,7 +585,7 @@ function renderVoices() {
           ${isDefault ? '<span class="tag">全局默认</span>' : ''}
           ${disabled ? '<span class="tag">已禁用</span>' : ''}
         </div>
-        <div class="voice-meta">${escapeHtml(voice.description || '无说明')} · ${escapeHtml(voice.id)}</div>
+        <div class="voice-meta">${escapeHtml(voice.description || '无说明')} · ${escapeHtml(voice.id)}${voice.consent_confirmed ? '' : ' · 未确认授权，不可合成'}</div>
       </div>
       <div class="tag-row">
         <span class="tag">建议情绪：${escapeHtml(voice.emotion || '未设置')}</span>
@@ -461,7 +601,7 @@ function renderVoices() {
     `;
     list.appendChild(card);
 
-    if (!disabled) {
+    if (isVoiceUsable(voice)) {
       const option = document.createElement('option');
       option.value = voice.id;
       option.textContent = voice.name;
@@ -705,12 +845,27 @@ function bindConfigDirtyState() {
   [
     'api-key',
     'base-url',
-    'model',
     'default-context',
     'max-text-chars',
     'max-concurrency',
     'max-voice-file-mb',
     'reply-mode',
+    'delivery-mode',
+    'background-queue-size',
+    'tts-timeout-seconds',
+    'tts-max-retries',
+    'tts-rate-limit-rpm',
+    'tts-retry-backoff-base-seconds',
+    'tts-retry-backoff-max-seconds',
+    'circuit-failure-threshold',
+    'circuit-recovery-seconds',
+    'async-failure-notice',
+    'job-persistence-enabled',
+    'job-recovery-max-age-hours',
+    'job-history-size',
+    'background-audio-cleanup',
+    'platform-preflight-enabled',
+    'live-api-test-enabled',
     'auto-tts-enabled',
     'auto-tts-probability',
     'auto-tts-group-whitelist',
@@ -748,6 +903,7 @@ function bindActionAvailability() {
     'voice-consent',
     'preview-voice',
     'preview-text',
+    'live-api-test-enabled',
   ].forEach(id => {
     const el = $(id);
     el.addEventListener('input', updateActionAvailability);
@@ -770,6 +926,9 @@ async function init() {
   bind('upload-voice', uploadVoice, '上传中...');
   bind('preview-btn', preview, '生成中...');
   bind('test-connection', testConnection, '诊断中...');
+  bind('refresh-tasks', refreshQueueStatus, '刷新中...');
+  bind('clear-task-history', () => clearTasks(false), '清理中...');
+  bind('cancel-all-tasks', confirmCancelAllTasks, '取消中...');
   bindConfigDirtyState();
   bindActionAvailability();
   bindProviderSelect();
@@ -795,7 +954,14 @@ async function init() {
     }
   });
 
+  $('task-list').addEventListener('click', async event => {
+    const button = event.target.closest('button[data-job-id]');
+    if (!button) return;
+    await runAction(button, '取消中...', () => cancelTask(button.dataset.jobId));
+  });
+
   await refresh();
+  window.setInterval(refreshQueueStatus, 5000);
 }
 
 init().catch(error => toast(extractErrorMessage(error), 'err'));

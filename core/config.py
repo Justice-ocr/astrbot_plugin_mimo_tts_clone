@@ -6,15 +6,32 @@ from typing import Any
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "config_version": 2,
     "api_key": "",
     "base_url": "https://api.xiaomimimo.com/v1",
     "model": "mimo-v2.5-tts-voiceclone",
     "output_format": "wav",
     "default_context": "",
-    "max_text_chars": 500,
+    "max_text_chars": 2500,
     "max_voice_file_mb": 10,
     "max_concurrency": 1,
-    "reply_mode": "audio_only",
+    "reply_mode": "text_and_audio",
+    "delivery_mode": "background",
+    "background_queue_size": 20,
+    "tts_timeout_seconds": 120,
+    "tts_max_retries": 2,
+    "tts_rate_limit_rpm": 90,
+    "tts_retry_backoff_base_seconds": 1.0,
+    "tts_retry_backoff_max_seconds": 15.0,
+    "circuit_failure_threshold": 5,
+    "circuit_recovery_seconds": 60,
+    "async_failure_notice": "command_only",
+    "job_persistence_enabled": True,
+    "job_recovery_max_age_hours": 24,
+    "job_history_size": 100,
+    "background_audio_cleanup": "after_delivery",
+    "platform_preflight_enabled": True,
+    "live_api_test_enabled": False,
     "auto_tts_enabled": False,
     "auto_tts_probability": 0.0,
     "auto_tts_group_whitelist": [],
@@ -35,7 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ai_style_director_fallback_to_emotion": True,
     "ai_style_director_debug_log": True,
     "segment_enabled": True,
-    "segment_threshold_chars": 180,
+    "segment_threshold_chars": 2500,
     "segment_max_segments": 6,
     "admin_users": [],
 }
@@ -43,6 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 @dataclass(slots=True)
 class PluginConfig:
+    config_version: int
     api_key: str
     base_url: str
     model: str
@@ -52,6 +70,22 @@ class PluginConfig:
     max_voice_file_mb: int
     max_concurrency: int
     reply_mode: str
+    delivery_mode: str
+    background_queue_size: int
+    tts_timeout_seconds: int
+    tts_max_retries: int
+    tts_rate_limit_rpm: int
+    tts_retry_backoff_base_seconds: float
+    tts_retry_backoff_max_seconds: float
+    circuit_failure_threshold: int
+    circuit_recovery_seconds: int
+    async_failure_notice: str
+    job_persistence_enabled: bool
+    job_recovery_max_age_hours: int
+    job_history_size: int
+    background_audio_cleanup: str
+    platform_preflight_enabled: bool
+    live_api_test_enabled: bool
     auto_tts_enabled: bool
     auto_tts_probability: float
     auto_tts_group_whitelist: list[str]
@@ -83,6 +117,7 @@ class PluginConfig:
 
 def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    raw = migrate_config(raw)
     raw_has_file_fallback = False
     legacy_file_fallback = DEFAULT_CONFIG["file_fallback_enabled"]
     if isinstance(raw, dict):
@@ -92,18 +127,55 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             if key in raw:
                 cfg[key] = raw[key]
 
+    cfg["config_version"] = 2
     cfg["api_key"] = str(cfg.get("api_key") or "").strip()
     cfg["base_url"] = str(cfg.get("base_url") or DEFAULT_CONFIG["base_url"]).rstrip("/")
-    cfg["model"] = str(cfg.get("model") or DEFAULT_CONFIG["model"]).strip()
-    cfg["output_format"] = str(cfg.get("output_format") or "wav").strip().lower()
+    cfg["model"] = DEFAULT_CONFIG["model"]
+    cfg["output_format"] = "wav"
     cfg["default_context"] = str(cfg.get("default_context") or "")
-    cfg["max_text_chars"] = _int_at_least(cfg.get("max_text_chars"), 500, 1)
-    cfg["max_voice_file_mb"] = _int_at_least(cfg.get("max_voice_file_mb"), 10, 1)
-    cfg["max_concurrency"] = _int_at_least(cfg.get("max_concurrency"), 1, 1)
-    reply_mode = str(cfg.get("reply_mode") or "audio_only").strip().lower()
+    cfg["max_text_chars"] = _int_between(cfg.get("max_text_chars"), 2500, 1, 8000)
+    cfg["max_voice_file_mb"] = _int_between(cfg.get("max_voice_file_mb"), 10, 1, 10)
+    cfg["max_concurrency"] = _int_between(cfg.get("max_concurrency"), 1, 1, 4)
+    reply_mode = str(cfg.get("reply_mode") or "text_and_audio").strip().lower()
     if reply_mode not in {"audio_only", "text_and_audio", "text_only"}:
-        reply_mode = "audio_only"
+        reply_mode = "text_and_audio"
     cfg["reply_mode"] = reply_mode
+    delivery_mode = str(cfg.get("delivery_mode") or "background").strip().lower()
+    cfg["delivery_mode"] = delivery_mode if delivery_mode in {"blocking", "background"} else "background"
+    cfg["background_queue_size"] = _int_between(cfg.get("background_queue_size"), 20, 1, 100)
+    cfg["tts_timeout_seconds"] = _int_between(cfg.get("tts_timeout_seconds"), 120, 10, 300)
+    cfg["tts_max_retries"] = _int_between(cfg.get("tts_max_retries"), 2, 0, 5)
+    cfg["tts_rate_limit_rpm"] = _int_between(cfg.get("tts_rate_limit_rpm"), 90, 1, 100)
+    cfg["tts_retry_backoff_base_seconds"] = _float_between(
+        cfg.get("tts_retry_backoff_base_seconds"), 1.0, 0.1, 30.0
+    )
+    cfg["tts_retry_backoff_max_seconds"] = _float_between(
+        cfg.get("tts_retry_backoff_max_seconds"), 15.0,
+        cfg["tts_retry_backoff_base_seconds"], 120.0
+    )
+    cfg["circuit_failure_threshold"] = _int_between(
+        cfg.get("circuit_failure_threshold"), 5, 1, 20
+    )
+    cfg["circuit_recovery_seconds"] = _int_between(
+        cfg.get("circuit_recovery_seconds"), 60, 5, 600
+    )
+    failure_notice = str(cfg.get("async_failure_notice") or "command_only").strip().lower()
+    cfg["async_failure_notice"] = (
+        failure_notice if failure_notice in {"command_only", "always", "never"} else "command_only"
+    )
+    cfg["job_persistence_enabled"] = _bool_value(cfg.get("job_persistence_enabled", True))
+    cfg["job_recovery_max_age_hours"] = _int_between(
+        cfg.get("job_recovery_max_age_hours"), 24, 1, 168
+    )
+    cfg["job_history_size"] = _int_between(cfg.get("job_history_size"), 100, 10, 500)
+    cleanup = str(cfg.get("background_audio_cleanup") or "after_delivery").strip().lower()
+    cfg["background_audio_cleanup"] = (
+        cleanup if cleanup in {"after_delivery", "retention"} else "after_delivery"
+    )
+    cfg["platform_preflight_enabled"] = _bool_value(
+        cfg.get("platform_preflight_enabled", True)
+    )
+    cfg["live_api_test_enabled"] = _bool_value(cfg.get("live_api_test_enabled", False))
     cfg["auto_tts_enabled"] = _bool_value(cfg.get("auto_tts_enabled", False))
     try:
         probability = float(cfg.get("auto_tts_probability") or 0.0)
@@ -146,8 +218,10 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         cfg.get("ai_style_director_debug_log", True)
     )
     cfg["segment_enabled"] = _bool_value(cfg.get("segment_enabled", True))
-    cfg["segment_threshold_chars"] = _int_at_least(cfg.get("segment_threshold_chars"), 180, 1)
-    cfg["segment_max_segments"] = _int_at_least(cfg.get("segment_max_segments"), 6, 1)
+    cfg["segment_threshold_chars"] = _int_between(
+        cfg.get("segment_threshold_chars"), 2500, 1, cfg["max_text_chars"]
+    )
+    cfg["segment_max_segments"] = _int_between(cfg.get("segment_max_segments"), 6, 1, 20)
     admins = cfg.get("admin_users") or []
     cfg["admin_users"] = _string_list(admins)
     return cfg
@@ -158,12 +232,45 @@ def build_plugin_config(raw: dict[str, Any] | None) -> PluginConfig:
     return PluginConfig(**cfg)
 
 
+def migrate_config(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Migrate persisted v0.5.x configuration into the v0.6 schema."""
+    if not isinstance(raw, dict):
+        return {}
+    migrated = copy.deepcopy(raw)
+    try:
+        version = int(migrated.get("config_version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if version < 2:
+        migrated.setdefault("job_persistence_enabled", True)
+        migrated.setdefault("job_recovery_max_age_hours", 24)
+        migrated.setdefault("job_history_size", 100)
+        migrated.setdefault("background_audio_cleanup", "after_delivery")
+        migrated.setdefault("tts_rate_limit_rpm", 90)
+        migrated.setdefault("platform_preflight_enabled", True)
+        migrated.setdefault("live_api_test_enabled", False)
+    migrated["config_version"] = 2
+    return migrated
+
+
 def _int_at_least(value: Any, default: int, minimum: int) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = default
     return max(minimum, parsed)
+
+
+def _int_between(value: Any, default: int, minimum: int, maximum: int) -> int:
+    return min(maximum, _int_at_least(value, default, minimum))
+
+
+def _float_between(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(maximum, max(minimum, parsed))
 
 
 def _bool_value(value: Any) -> bool:
