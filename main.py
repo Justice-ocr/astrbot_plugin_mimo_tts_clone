@@ -51,13 +51,14 @@ from .pages_api import PagesAPIMixin
 
 
 _FINAL_OUTPUT_RE = re.compile(r"^mimo_tts_(?!.*\.part).+\.wav$")
+_PENDING_BACKGROUND_JOB_EXTRA = "mimo_tts_pending_background_job_v1"
 
 
 @register(
     "astrbot_plugin_mimo_tts_clone",
     "Justice-ocr",
     "MiMo 官方 TTS 音色克隆、多音色切换与 AI 语音导演",
-    "0.6.0",
+    "0.6.1",
 )
 class MimoTTSClonePlugin(PagesAPIMixin, Star):
     def __init__(self, context: Context, config: dict):
@@ -1095,6 +1096,52 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         )
         return await self._background_manager().submit(job)
 
+    def _defer_background_job_until_message_sent(
+        self,
+        *,
+        event: AstrMessageEvent,
+        text: str,
+        source: str,
+        voice: str = "",
+        emotion: str = "",
+        context: str = "",
+    ) -> None:
+        if not hasattr(filter, "after_message_sent"):
+            raise RuntimeError(
+                "当前 AstrBot 版本不支持消息发送后钩子，无法保证文字先于语音发送。"
+            )
+        session = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not session:
+            raise RuntimeError(
+                "当前消息缺少 unified_msg_origin，无法后台补发语音。"
+            )
+        self._preflight_session(session)
+        event.set_extra(
+            _PENDING_BACKGROUND_JOB_EXTRA,
+            {
+                "text": text,
+                "source": "command" if source == "command" else "auto",
+                "voice": voice,
+                "emotion": emotion,
+                "context": context,
+            },
+        )
+
+    async def _notify_deferred_submission_failure(
+        self,
+        event: AstrMessageEvent,
+        message: str,
+    ) -> None:
+        session = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if not session or Plain is None:
+            return
+        try:
+            await self._send_to_session(session, [Plain(message)])
+        except Exception as exc:
+            self.logger.warning(
+                "[mimo-tts] failed to deliver deferred queue notice: %s", exc
+            )
+
     if hasattr(filter, "on_platform_loaded"):
 
         @filter.on_platform_loaded()
@@ -1104,6 +1151,51 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             recovered = manager.snapshot().get("recovered_jobs", 0)
             if recovered:
                 self.logger.info("[mimo-tts] resumed %s persisted TTS jobs", recovered)
+
+    if hasattr(filter, "after_message_sent"):
+
+        @filter.after_message_sent()
+        async def submit_tts_after_text_sent(self, event: AstrMessageEvent):
+            pending = event.get_extra(_PENDING_BACKGROUND_JOB_EXTRA)
+            if not isinstance(pending, dict):
+                return
+
+            # Consume before awaiting so another hook invocation cannot submit twice.
+            event.set_extra(_PENDING_BACKGROUND_JOB_EXTRA, None)
+            text = clean_tts_text(str(pending.get("text") or ""))
+            if not text:
+                self.logger.info(
+                    "[mimo-tts] deferred tts skipped: pending text is empty"
+                )
+                return
+
+            source = str(pending.get("source") or "auto")
+            try:
+                accepted = await self._submit_background_job(
+                    event=event,
+                    text=text,
+                    source=source,
+                    voice=str(pending.get("voice") or ""),
+                    emotion=str(pending.get("emotion") or ""),
+                    context=str(pending.get("context") or ""),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "[mimo-tts] deferred queue submit failed: %s", exc
+                )
+                if source == "command":
+                    await self._notify_deferred_submission_failure(
+                        event, f"语音任务提交失败：{exc}"
+                    )
+                return
+            if not accepted:
+                self.logger.warning(
+                    "[mimo-tts] deferred tts skipped: background queue full"
+                )
+                if source == "command":
+                    await self._notify_deferred_submission_failure(
+                        event, "语音队列已满，请稍后重试。"
+                    )
 
     @filter.command("tts", alias={"朗读", "语音"})
     async def tts_command(self, event: AstrMessageEvent):
@@ -1121,7 +1213,21 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             return
         if self.plugin_config.delivery_mode == "background":
             if self.plugin_config.reply_mode == "text_and_audio":
-                await event.send(event.plain_result(text))
+                try:
+                    self._defer_background_job_until_message_sent(
+                        event=event,
+                        text=text,
+                        source="command",
+                        voice=voice_name or "",
+                        emotion=requested_emotion or "",
+                        context=command_context,
+                    )
+                except Exception as exc:
+                    yield event.plain_result(text)
+                    yield event.plain_result(f"语音任务提交失败：{exc}")
+                    return
+                yield event.plain_result(text)
+                return
             try:
                 accepted = await self._submit_background_job(
                     event=event,
@@ -1211,11 +1317,17 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             return
         if self.plugin_config.delivery_mode == "background":
             if self.plugin_config.reply_mode == "text_and_audio":
-                await event.send(result)
-                if hasattr(event, "clear_result"):
-                    event.clear_result()
-                else:
-                    result.chain = []
+                try:
+                    self._defer_background_job_until_message_sent(
+                        event=event,
+                        text=text,
+                        source="auto",
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "[mimo-tts] auto tts deferral failed: %s", exc
+                    )
+                return
             try:
                 accepted = await self._submit_background_job(
                     event=event,

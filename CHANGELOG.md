@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.1 - 2026-07-28
+
+### Changed
+
+- `text_and_audio + background` 改为通过 AstrBot `after_message_sent` 钩子提交 TTS；文字走完结果装饰、内建分段回复和正常发送后，后台音频才会开始生成。
+- 显式 `/tts` 的文字回复也改回正常结果 pipeline，不再从命令处理器直接发送。
+- 后台文字先发改用 AstrBot 官方 `after_message_sent` 能力，并在运行时检查该钩子是否可用。
+
+### Fixed
+
+- 修复插件直接调用 `event.send()` 并清空结果，导致分段回复及其他结果装饰插件失效的问题。
+- 修复极快 TTS 任务可能先于正常文字回复完成并发送的问题。
+
 ## v0.6.0 - 2026-07-27
 
 ### Added

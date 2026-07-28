@@ -126,6 +126,7 @@ def _install_astrbot_stubs():
         command=_command_decorator,
         llm_tool=_command_decorator,
         on_decorating_result=_command_decorator,
+        after_message_sent=_command_decorator,
         on_platform_loaded=_command_decorator,
     )
 
@@ -217,7 +218,7 @@ class ConfigPersistenceTests(unittest.TestCase):
             self.assertTrue(plugin._delete_voice_audio_file(inside))
             self.assertFalse(inside.exists())
 
-    def test_slow_auto_tts_sends_text_before_background_audio(self):
+    def test_auto_tts_keeps_result_in_pipeline_and_starts_after_text_sent(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as tmp:
                 _StarTools.data_dir = tmp
@@ -241,18 +242,19 @@ class ConfigPersistenceTests(unittest.TestCase):
                 output = Path(tmp) / "slow.wav"
 
                 async def slow_synthesis(text, **_kwargs):
-                    self.assertEqual(text, "这是先发送的文字。")
+                    self.assertEqual(text, "这是原始文字。")
                     timeline.append(("tts-start", asyncio.get_running_loop().time()))
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(0.01)
                     output.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
                     timeline.append(("tts-end", asyncio.get_running_loop().time()))
                     return output
 
                 plugin.synthesize_text = slow_synthesis
                 plain = self.module.Plain()
+                plain.text = "这是原始文字。"
                 result = types.SimpleNamespace(
                     chain=[plain],
-                    get_plain_text=lambda: "这是先发送的文字。",
+                    get_plain_text=lambda: " ".join(comp.text for comp in result.chain),
                     is_llm_result=lambda: True,
                 )
 
@@ -261,16 +263,20 @@ class ConfigPersistenceTests(unittest.TestCase):
 
                     def __init__(self):
                         self.cleared = False
+                        self.extras = {}
 
                     def get_sender_id(self):
                         return "user-1"
 
-                    def get_extra(self, key):
+                    def get_extra(self, key, default=None):
                         if key == "provider_request":
                             return types.SimpleNamespace(
                                 conversation=types.SimpleNamespace(cid=self.unified_msg_origin)
                             )
-                        return None
+                        return self.extras.get(key, default)
+
+                    def set_extra(self, key, value):
+                        self.extras[key] = value
 
                     def get_result(self):
                         return None if self.cleared else result
@@ -278,31 +284,107 @@ class ConfigPersistenceTests(unittest.TestCase):
                     def clear_result(self):
                         self.cleared = True
 
-                    async def send(self, message):
-                        self.assert_message_chain = message
-                        timeline.append(("text", asyncio.get_running_loop().time()))
-
                 event = Event()
                 started = asyncio.get_running_loop().time()
                 await plugin.auto_tts_reply(event)
                 returned = asyncio.get_running_loop().time()
 
                 self.assertLess(returned - started, 0.5)
-                self.assertTrue(event.cleared)
-                self.assertEqual([item[0] for item in timeline], ["text"])
+                self.assertFalse(event.cleared)
+                self.assertIs(event.get_result(), result)
+                self.assertEqual(timeline, [])
 
-                await asyncio.wait_for(plugin._job_manager._idle.wait(), timeout=4.0)
+                # Simulate another decorating-result plugin and AstrBot's segmented send.
+                result.chain[0].text = "这是后续插件改写后的第一段。"
+                second = self.module.Plain()
+                second.text = "第二段。"
+                result.chain.append(second)
+                timeline.append(("text-1", asyncio.get_running_loop().time()))
+                timeline.append(("text-2", asyncio.get_running_loop().time()))
+                await plugin.submit_tts_after_text_sent(event)
+
+                await asyncio.wait_for(plugin._job_manager._idle.wait(), timeout=1.0)
                 self.assertEqual(
                     [item[0] for item in timeline],
-                    ["text", "tts-start", "tts-end", "audio"],
+                    ["text-1", "text-2", "tts-start", "tts-end", "audio"],
                 )
                 self.assertEqual(timeline[-1][2], event.unified_msg_origin)
+                self.assertEqual(plugin._queue_snapshot()["completed_jobs"], 1)
+
+                await plugin.submit_tts_after_text_sent(event)
                 self.assertEqual(plugin._queue_snapshot()["completed_jobs"], 1)
 
                 manager = plugin._job_manager
                 await plugin.terminate()
                 self.assertIsNone(plugin._job_manager)
                 self.assertEqual(manager._workers, [])
+
+        asyncio.run(scenario())
+
+    def test_background_tts_command_uses_normal_result_pipeline(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                _StarTools.data_dir = tmp
+                plugin = self.module.MimoTTSClonePlugin(
+                    _Context(),
+                    {
+                        "reply_mode": "text_and_audio",
+                        "delivery_mode": "background",
+                    },
+                )
+                submitted = []
+
+                async def submit(**kwargs):
+                    submitted.append(kwargs)
+                    return True
+
+                plugin._submit_background_job = submit
+
+                class Event:
+                    message_str = "/tts hello world"
+                    unified_msg_origin = "aiocqhttp:FriendMessage:user-1"
+
+                    def __init__(self):
+                        self.extras = {}
+                        self.result = None
+
+                    def get_sender_id(self):
+                        return "user-1"
+
+                    def get_extra(self, key, default=None):
+                        return self.extras.get(key, default)
+
+                    def set_extra(self, key, value):
+                        self.extras[key] = value
+
+                    def get_result(self):
+                        return self.result
+
+                    def plain_result(self, text):
+                        plain = self_module.Plain()
+                        plain.text = text
+                        return types.SimpleNamespace(
+                            chain=[plain],
+                            get_plain_text=lambda: plain.text,
+                        )
+
+                self_module = self.module
+                event = Event()
+                command = plugin.tts_command(event)
+                event.result = await anext(command)
+
+                self.assertEqual(event.result.get_plain_text(), "hello world")
+                self.assertEqual(submitted, [])
+
+                event.result.chain[0].text = "HELLO WORLD"
+                await plugin.submit_tts_after_text_sent(event)
+                self.assertEqual(len(submitted), 1)
+                self.assertEqual(submitted[0]["text"], "hello world")
+                self.assertEqual(submitted[0]["source"], "command")
+
+                with self.assertRaises(StopAsyncIteration):
+                    await anext(command)
+                await plugin.terminate()
 
         asyncio.run(scenario())
 

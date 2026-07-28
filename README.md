@@ -147,7 +147,7 @@ pip install -r requirements.txt
 - 风格、语气、情绪等自然语言控制放在 `role = user` 的消息中。
 - 参考音频通过 `audio.voice = data:{MIME_TYPE};base64,{BASE64_AUDIO}` 传入。
 - 参考音频仅支持 `mp3` / `wav`，默认限制为 10MB。
-- voiceclone 的低延迟流式能力官方暂未开放。默认后台模式是异步聊天交付，不是音频流式传输：文字先发送，完整 WAV 生成后再主动补发。
+- voiceclone 的低延迟流式能力官方暂未开放。默认后台模式是异步聊天交付，不是音频流式传输：文字先走完 AstrBot 的结果装饰、分段回复和正常发送链，完整 WAV 随后再主动补发。
 - 官方当前建议尽量避免在约 2500 字以内分段，因此默认单请求和分段阈值均为 `2500`。超长文本会在调用前完整分段校验，最终合并成一个 WAV。
 
 ## 发送前 AI 导演
@@ -193,6 +193,7 @@ Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrB
 
 ## 后台任务与故障恢复
 
+- `text_and_audio + background` 不会在发送前钩子中直接调用 `event.send()`；原文字可继续被分段回复等插件处理。AstrBot 确认文字发送完成后，插件才提交后台 TTS，保证语音不会抢在文字前面。
 - 每个任务保存原始会话 UMO、文本、来源、状态、时间、错误和最终 WAV 路径，不保存 AstrBot event 对象。
 - 插件启动时恢复未结束任务；如果最终 WAV 已存在，只执行主动发送，不重新合成。
 - 显式 `/tts` 比自动语音任务优先，同一会话始终按提交顺序处理。取消任务不会杀死整个 worker。
@@ -240,10 +241,10 @@ audio_path = await plugin.text_to_speech(
 | --- | --- |
 | 插件名 | `astrbot_plugin_mimo_tts_clone` |
 | 展示名 | MiMo TTS 音色克隆 |
-| 当前版本 | `v0.6.0` |
+| 当前版本 | `v0.6.1` |
 | 作者 | Justice-ocr |
 | 作者简介 | AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、Pages 管理体验与实用型机器人扩展 |
-| AstrBot 版本 | `>=4.16.0,<5` |
+| AstrBot 版本 | `>=4.16.0,<5`（后台文字先发依赖 `after_message_sent` 钩子） |
 | 支持平台 | `aiocqhttp` |
 | WebUI 图标 | `logo.png` |
 | README 图标 | `assets/icon.svg` |
