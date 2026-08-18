@@ -237,6 +237,7 @@ class ConfigPersistenceTests(unittest.TestCase):
                         "auto_tts_probability": 1.0,
                         "reply_mode": "text_and_audio",
                         "delivery_mode": "background",
+                        "audio_transport": "path",
                     },
                 )
                 output = Path(tmp) / "slow.wav"
@@ -493,6 +494,9 @@ class ConfigPersistenceTests(unittest.TestCase):
         cfg = normalize_config(
             {
                 "reply_mode": "bad",
+                "audio_transport": "bad",
+                "delivery_segment_chars": 9999,
+                "base64_max_mb": 999,
                 "auto_tts_enabled": "true",
                 "auto_tts_probability": 2,
                 "file_fallback_enabled": "false",
@@ -504,6 +508,9 @@ class ConfigPersistenceTests(unittest.TestCase):
 
         self.assertEqual(cfg["reply_mode"], "text_and_audio")
         self.assertEqual(cfg["delivery_mode"], "background")
+        self.assertEqual(cfg["audio_transport"], "base64")
+        self.assertEqual(cfg["delivery_segment_chars"], cfg["max_text_chars"])
+        self.assertEqual(cfg["base64_max_mb"], 40)
         self.assertTrue(cfg["auto_tts_enabled"])
         self.assertEqual(cfg["auto_tts_probability"], 1.0)
         self.assertFalse(cfg["file_fallback_enabled"])

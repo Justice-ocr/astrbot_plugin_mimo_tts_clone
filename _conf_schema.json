@@ -137,7 +137,26 @@
   "max_concurrency": {
     "type": "int",
     "description": "最大并发生成数",
-    "default": 1
+    "default": 2
+  },
+  "audio_transport": {
+    "type": "string",
+    "description": "音频传输方式",
+    "options": ["base64", "path"],
+    "hint": "base64 可跨 Linux、Windows 和 Android；path 仅适合 AstrBot 与平台共享文件系统的场景。",
+    "default": "base64"
+  },
+  "delivery_segment_chars": {
+    "type": "int",
+    "description": "后台 Base64 每段最大字符数",
+    "hint": "长文本会按此长度分段并发生成，全部完成后按顺序发送。",
+    "default": 500
+  },
+  "base64_max_mb": {
+    "type": "int",
+    "description": "单段 Base64 原始音频上限 MB",
+    "hint": "超过上限时停止发送并提示调低分段字符数。",
+    "default": 8
   },
   "reply_mode": {
     "type": "string",

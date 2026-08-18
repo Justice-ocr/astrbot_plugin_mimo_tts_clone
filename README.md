@@ -147,8 +147,8 @@ pip install -r requirements.txt
 - 风格、语气、情绪等自然语言控制放在 `role = user` 的消息中。
 - 参考音频通过 `audio.voice = data:{MIME_TYPE};base64,{BASE64_AUDIO}` 传入。
 - 参考音频仅支持 `mp3` / `wav`，默认限制为 10MB。
-- voiceclone 的低延迟流式能力官方暂未开放。默认后台模式是异步聊天交付，不是音频流式传输：文字先走完 AstrBot 的结果装饰、分段回复和正常发送链，完整 WAV 随后再主动补发。
-- 官方当前建议尽量避免在约 2500 字以内分段，因此默认单请求和分段阈值均为 `2500`。超长文本会在调用前完整分段校验，最终合并成一个 WAV。
+- voiceclone 的低延迟流式能力官方暂未开放。默认后台模式是异步聊天交付，不是音频流式传输：文字先走完 AstrBot 的结果装饰、分段回复和正常发送链，语音随后再主动补发。
+- 公共合成接口仍按 MiMo 单次上限分段并最终合并成一个 WAV；后台 Base64 交付默认每 `500` 字生成一个独立 WAV，全部生成完成后按原文顺序逐条发送。
 
 ## 发送前 AI 导演
 
@@ -194,18 +194,20 @@ Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrB
 ## 后台任务与故障恢复
 
 - `text_and_audio + background` 不会在发送前钩子中直接调用 `event.send()`；原文字可继续被分段回复等插件处理。AstrBot 确认文字发送完成后，插件才提交后台 TTS，保证语音不会抢在文字前面。
-- 每个任务保存原始会话 UMO、文本、来源、状态、时间、错误和最终 WAV 路径，不保存 AstrBot event 对象。
-- 插件启动时恢复未结束任务；如果最终 WAV 已存在，只执行主动发送，不重新合成。
+- 每个任务保存原始会话 UMO、文本、来源、状态、时间、错误和后台产物路径，不保存 AstrBot event 对象。
+- 插件启动时恢复未结束任务；如果完整后台产物仍存在，只执行主动发送，不重新合成。
 - 显式 `/tts` 比自动语音任务优先，同一会话始终按提交顺序处理。取消任务不会杀死整个 worker。
+- 默认使用 `base64://` Record 传输，不依赖 AstrBot 与 NapCat 共享本地路径；`audio_transport=path` 可恢复旧的共享路径模式。
+- 后台长文本会按 `delivery_segment_chars` 分段并发生成，全部成功后按顺序逐条发送。单段原始 WAV 超过 `base64_max_mb` 时停止交付并报告失败。
 - Record 主动发送失败时，在 `file_fallback_enabled=true` 下会重新构造 File 消息发送。
 - Pages 每 5 秒刷新任务和诊断，可取消单个活动任务、清理历史或二次确认后取消全部。
-- `failed` 任务若保留着完整 WAV，会在下次重启视为待交付任务；过期任务按恢复期限取消。
+- `failed` 任务若保留着完整后台产物，会在下次重启视为待交付任务；过期任务按恢复期限取消。分段交付中断后会从第一段重试，极端情况下可能重复已成功发送的段。
 
 ## 从 v0.5.x 升级
 
 现有配置首次加载时自动迁移到 `config_version=2`。API Key、回复模式、交付模式、自动语音访问控制和音色数据保持不变；新增可靠性与任务配置使用 0.6.0 默认值。迁移结果会随下一次 Pages 保存写入本地配置。
 
-默认行为仍是 `text_and_audio + background`：文字先发，后台生成一个完整 WAV，再向原会话补发。需要旧行为时继续使用 `delivery_mode=blocking`。
+默认行为仍是 `text_and_audio + background`：文字先发，后台生成一段或多段 WAV，并通过 Base64 向原会话按序补发。需要共享路径行为时设置 `audio_transport=path`，需要阻塞行为时设置 `delivery_mode=blocking`。
 
 ## 给其他插件复用
 
@@ -241,7 +243,7 @@ audio_path = await plugin.text_to_speech(
 | --- | --- |
 | 插件名 | `astrbot_plugin_mimo_tts_clone` |
 | 展示名 | MiMo TTS 音色克隆 |
-| 当前版本 | `v0.6.1` |
+| 当前版本 | `v0.7.0` |
 | 作者 | Justice-ocr |
 | 作者简介 | AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、Pages 管理体验与实用型机器人扩展 |
 | AstrBot 版本 | `>=4.16.0,<5`（后台文字先发依赖 `after_message_sent` 钩子） |

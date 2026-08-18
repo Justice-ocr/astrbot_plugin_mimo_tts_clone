@@ -14,7 +14,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "default_context": "",
     "max_text_chars": 2500,
     "max_voice_file_mb": 10,
-    "max_concurrency": 1,
+    "max_concurrency": 2,
+    "audio_transport": "base64",
+    "delivery_segment_chars": 500,
+    "base64_max_mb": 8,
     "reply_mode": "text_and_audio",
     "delivery_mode": "background",
     "background_queue_size": 20,
@@ -69,6 +72,9 @@ class PluginConfig:
     max_text_chars: int
     max_voice_file_mb: int
     max_concurrency: int
+    audio_transport: str
+    delivery_segment_chars: int
+    base64_max_mb: int
     reply_mode: str
     delivery_mode: str
     background_queue_size: int
@@ -114,6 +120,10 @@ class PluginConfig:
     def max_voice_file_bytes(self) -> int:
         return max(1, self.max_voice_file_mb) * 1024 * 1024
 
+    @property
+    def base64_max_bytes(self) -> int:
+        return max(1, self.base64_max_mb) * 1024 * 1024
+
 
 def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
@@ -135,7 +145,13 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg["default_context"] = str(cfg.get("default_context") or "")
     cfg["max_text_chars"] = _int_between(cfg.get("max_text_chars"), 2500, 1, 8000)
     cfg["max_voice_file_mb"] = _int_between(cfg.get("max_voice_file_mb"), 10, 1, 10)
-    cfg["max_concurrency"] = _int_between(cfg.get("max_concurrency"), 1, 1, 4)
+    cfg["max_concurrency"] = _int_between(cfg.get("max_concurrency"), 2, 1, 4)
+    transport = str(cfg.get("audio_transport") or "base64").strip().lower()
+    cfg["audio_transport"] = transport if transport in {"base64", "path"} else "base64"
+    cfg["delivery_segment_chars"] = _int_between(
+        cfg.get("delivery_segment_chars"), 500, 1, cfg["max_text_chars"]
+    )
+    cfg["base64_max_mb"] = _int_between(cfg.get("base64_max_mb"), 8, 1, 40)
     reply_mode = str(cfg.get("reply_mode") or "text_and_audio").strip().lower()
     if reply_mode not in {"audio_only", "text_and_audio", "text_only"}:
         reply_mode = "text_and_audio"

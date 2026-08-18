@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.0 - 2026-08-18
+
+### Added
+
+- 新增跨系统 `base64://` Record 传输，默认不再要求 AstrBot 与 NapCat 共享本地音频路径。
+- 新增后台交付分段长度与单段音频大小上限配置。
+
+### Changed
+
+- 后台长文本改为并发生成独立 WAV，全部完成后按原文顺序逐条发送；并发继续受现有 `max_concurrency` 限制，其默认值调整为 `2`。
+- 公共 `synthesize_text()`、Pages 试听和其他插件调用继续返回一个合并后的完整 WAV。
+
+### Fixed
+
+- 修复 AstrBot 与 NapCat 分别运行在 Linux、Windows 或 Android 环境时，本地路径无法被对端读取的问题。
+
 ## v0.6.1 - 2026-07-28
 
 ### Changed

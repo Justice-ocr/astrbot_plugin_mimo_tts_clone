@@ -151,10 +151,13 @@ function configPayload() {
     base_url: $('base-url').value.trim(),
     default_context: $('default-context').value,
     max_text_chars: Number($('max-text-chars').value || 2500),
-    max_concurrency: Number($('max-concurrency').value || 1),
+    max_concurrency: Number($('max-concurrency').value || 2),
     max_voice_file_mb: Number($('max-voice-file-mb').value || 10),
     reply_mode: $('reply-mode').value,
     delivery_mode: $('delivery-mode').value,
+    audio_transport: $('audio-transport').value,
+    delivery_segment_chars: Number($('delivery-segment-chars').value || 500),
+    base64_max_mb: Number($('base64-max-mb').value || 8),
     background_queue_size: Number($('background-queue-size').value || 20),
     tts_timeout_seconds: Number($('tts-timeout-seconds').value || 120),
     tts_max_retries: Number($('tts-max-retries').value || 2),
@@ -476,10 +479,13 @@ function applyState(payload) {
   $('model').value = state.config.model || 'mimo-v2.5-tts-voiceclone';
   $('default-context').value = state.config.default_context || '';
   $('max-text-chars').value = state.config.max_text_chars || 2500;
-  $('max-concurrency').value = state.config.max_concurrency || 1;
+  $('max-concurrency').value = state.config.max_concurrency || 2;
   $('max-voice-file-mb').value = state.config.max_voice_file_mb || 10;
   $('reply-mode').value = state.config.reply_mode || 'text_and_audio';
   $('delivery-mode').value = state.config.delivery_mode || 'background';
+  $('audio-transport').value = state.config.audio_transport || 'base64';
+  $('delivery-segment-chars').value = state.config.delivery_segment_chars || 500;
+  $('base64-max-mb').value = state.config.base64_max_mb || 8;
   $('background-queue-size').value = state.config.background_queue_size || 20;
   $('tts-timeout-seconds').value = state.config.tts_timeout_seconds || 120;
   $('tts-max-retries').value = state.config.tts_max_retries ?? 2;

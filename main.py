@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import pathlib
 import random
 import re
 import shlex
+import shutil
 import time
 from collections import OrderedDict
 from typing import Any
@@ -58,7 +60,7 @@ _PENDING_BACKGROUND_JOB_EXTRA = "mimo_tts_pending_background_job_v1"
     "astrbot_plugin_mimo_tts_clone",
     "Justice-ocr",
     "MiMo 官方 TTS 音色克隆、多音色切换与 AI 语音导演",
-    "0.6.1",
+    "0.7.0",
 )
 class MimoTTSClonePlugin(PagesAPIMixin, Star):
     def __init__(self, context: Context, config: dict):
@@ -349,6 +351,30 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 except OSError:
                     pass
 
+        protected_dirs = {
+            path.parent.resolve()
+            for path in protected
+            if path.name == "manifest.json"
+        }
+        bundle_dirs = [
+            path
+            for path in output_dir.glob("mimo_tts_job_*")
+            if path.is_dir() and path.resolve() not in protected_dirs
+        ]
+        if retention_days > 0:
+            cutoff = now - retention_days * 86400
+            for path in bundle_dirs:
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        shutil.rmtree(path, ignore_errors=True)
+                except OSError:
+                    pass
+            bundle_dirs = [path for path in bundle_dirs if path.exists()]
+        if max_files > 0 and len(bundle_dirs) > max_files:
+            bundle_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+            for path in bundle_dirs[max_files:]:
+                shutil.rmtree(path, ignore_errors=True)
+
     def list_available_voices(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
         """Public service helper for other plugins that need voice metadata."""
         return [
@@ -405,6 +431,63 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         style_director_enabled: bool | None = None,
     ) -> pathlib.Path:
         """Synthesize one complete WAV, merging internal segments when needed."""
+        voice, tts_result, segments, voice_data_url = await self._prepare_synthesis(
+            text,
+            voice_id=voice_id,
+            voice_name=voice_name,
+            emotion=emotion,
+            context=context,
+            user_id=user_id,
+            group_id=group_id,
+            split=split,
+            style_director_enabled=style_director_enabled,
+        )
+
+        output_dir = pathlib.Path(self.data_dir) / "outputs"
+        operation_id = time.time_ns()
+        final_path = output_dir / f"mimo_tts_{operation_id}.wav"
+        part_paths = [
+            output_dir / f"mimo_tts_{operation_id}.part{index:03d}.wav"
+            for index in range(len(segments))
+        ]
+        try:
+            for segment, part_path in zip(segments, part_paths, strict=True):
+                await self._synthesize_text_to_file(
+                    segment,
+                    voice,
+                    context=tts_result.context,
+                    voice_data_url=voice_data_url,
+                    output_path=part_path,
+                )
+            if len(part_paths) == 1:
+                await asyncio.to_thread(part_paths[0].replace, final_path)
+            else:
+                await asyncio.to_thread(merge_wav_files, part_paths, final_path)
+            await asyncio.to_thread(self._cleanup_outputs)
+            return final_path
+        except Exception:
+            final_path.unlink(missing_ok=True)
+            final_path.with_suffix(final_path.suffix + ".part").unlink(missing_ok=True)
+            raise
+        finally:
+            for part_path in part_paths:
+                part_path.unlink(missing_ok=True)
+                part_path.with_suffix(part_path.suffix + ".part").unlink(missing_ok=True)
+
+    async def _prepare_synthesis(
+        self,
+        text: str,
+        *,
+        voice_id: str | None = None,
+        voice_name: str | None = None,
+        emotion: str | None = None,
+        context: str = "",
+        user_id: str = "",
+        group_id: str = "",
+        split: bool = True,
+        max_segment_chars: int | None = None,
+        style_director_enabled: bool | None = None,
+    ) -> tuple[VoiceProfile, TTSContextResult, list[str], str]:
         cleaned = clean_tts_text(text)
         if not cleaned:
             raise RuntimeError("请输入要合成的文本")
@@ -430,6 +513,8 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         segment_limit = self.plugin_config.max_text_chars - style_prefix_chars
         if segment_limit < 1:
             raise RuntimeError("音色风格标签超过 MiMo 单次请求文本上限。")
+        if max_segment_chars is not None:
+            segment_limit = min(segment_limit, max(1, int(max_segment_chars)))
         segments = self._split_for_tts(final_text, max_chars=segment_limit) if split else [final_text]
         if not segments:
             raise RuntimeError("没有可合成的文本。")
@@ -439,38 +524,54 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 raise RuntimeError(
                     f"文本分段超过 MiMo 单次请求上限 {self.plugin_config.max_text_chars} 字。"
                 )
-
-        output_dir = pathlib.Path(self.data_dir) / "outputs"
-        operation_id = time.time_ns()
-        final_path = output_dir / f"mimo_tts_{operation_id}.wav"
-        part_paths = [
-            output_dir / f"mimo_tts_{operation_id}.part{index:03d}.wav"
-            for index in range(len(segments))
-        ]
         voice_data_url = await self._voice_data_url(voice)
-        try:
-            for segment, part_path in zip(segments, part_paths, strict=True):
-                await self._synthesize_text_to_file(
+        return voice, tts_result, segments, voice_data_url
+
+    async def _synthesize_delivery_bundle(self, job: TTSJob) -> pathlib.Path:
+        voice, tts_result, segments, voice_data_url = await self._prepare_synthesis(
+            job.text,
+            voice_name=job.voice or None,
+            emotion=job.emotion or None,
+            context=job.context,
+            user_id=job.user_id,
+            group_id=job.group_id,
+            max_segment_chars=self.plugin_config.delivery_segment_chars,
+        )
+        output_dir = pathlib.Path(self.data_dir) / "outputs"
+        bundle_dir = output_dir / f"mimo_tts_job_{job.id}_{time.time_ns()}"
+        part_paths = [bundle_dir / f"part{index:03d}.wav" for index in range(len(segments))]
+        bundle_dir.mkdir(parents=True, exist_ok=False)
+        tasks = [
+            asyncio.create_task(
+                self._synthesize_text_to_file(
                     segment,
                     voice,
                     context=tts_result.context,
                     voice_data_url=voice_data_url,
                     output_path=part_path,
-                )
-            if len(part_paths) == 1:
-                await asyncio.to_thread(part_paths[0].replace, final_path)
-            else:
-                await asyncio.to_thread(merge_wav_files, part_paths, final_path)
-            await asyncio.to_thread(self._cleanup_outputs)
-            return final_path
-        except Exception:
-            final_path.unlink(missing_ok=True)
-            final_path.with_suffix(final_path.suffix + ".part").unlink(missing_ok=True)
+                ),
+                name=f"mimo-tts-segment-{job.id}-{index}",
+            )
+            for index, (segment, part_path) in enumerate(zip(segments, part_paths, strict=True))
+        ]
+        try:
+            await asyncio.gather(*tasks)
+            manifest = bundle_dir / "manifest.json"
+            temporary = bundle_dir / "manifest.json.tmp"
+            payload = {
+                "kind": "mimo_tts_delivery_v1",
+                "segments": [path.name for path in part_paths],
+            }
+            temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(manifest)
+            return manifest
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.to_thread(shutil.rmtree, bundle_dir, True)
             raise
-        finally:
-            for part_path in part_paths:
-                part_path.unlink(missing_ok=True)
-                part_path.with_suffix(part_path.suffix + ".part").unlink(missing_ok=True)
 
     async def text_to_speech(
         self,
@@ -907,10 +1008,53 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
 
     def _audio_component(self, audio_path: pathlib.Path):
         if Record is not None:
-            return Record(file=str(audio_path))
+            try:
+                return Record(file=self._audio_source(audio_path))
+            except Exception as exc:
+                self.logger.warning(
+                    "[mimo-tts] failed to build Record payload, fallback to file: %s", exc
+                )
         if self.plugin_config.file_fallback_enabled:
             return File(name=audio_path.name, file=str(audio_path))
         return None
+
+    def _audio_source(self, audio_path: pathlib.Path) -> str:
+        if self.plugin_config.audio_transport == "path":
+            return str(audio_path)
+        size = audio_path.stat().st_size
+        if size > self.plugin_config.base64_max_bytes:
+            raise RuntimeError(
+                f"音频 {audio_path.name} 大小 {size / 1024 / 1024:.1f} MB，"
+                f"超过 Base64 上限 {self.plugin_config.base64_max_mb} MB。"
+            )
+        payload = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+        return f"base64://{payload}"
+
+    @staticmethod
+    def _delivery_audio_paths(output: pathlib.Path) -> list[pathlib.Path]:
+        if output.name != "manifest.json":
+            return [output]
+        data = json.loads(output.read_text(encoding="utf-8"))
+        if data.get("kind") != "mimo_tts_delivery_v1":
+            raise RuntimeError("后台语音分段清单格式无效。")
+        parent = output.parent.resolve()
+        paths: list[pathlib.Path] = []
+        for name in data.get("segments") or []:
+            path = (output.parent / str(name)).resolve()
+            if path.parent != parent or not path.is_file():
+                raise RuntimeError("后台语音分段文件缺失或路径无效。")
+            paths.append(path)
+        if not paths:
+            raise RuntimeError("后台语音分段清单为空。")
+        return paths
+
+    @staticmethod
+    def _delete_delivery_output(output: pathlib.Path, paths: list[pathlib.Path]) -> None:
+        if output.name == "manifest.json":
+            shutil.rmtree(output.parent, ignore_errors=True)
+            return
+        for path in paths:
+            path.unlink(missing_ok=True)
 
     @staticmethod
     def _is_plain_component(component: Any) -> bool:
@@ -921,7 +1065,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
     async def _send_audio_result(self, event: AstrMessageEvent, audio_path: pathlib.Path) -> None:
         if Record is not None:
             try:
-                await event.send(event.chain_result([Record(file=str(audio_path))]))
+                await event.send(
+                    event.chain_result([Record(file=self._audio_source(audio_path))])
+                )
                 return
             except Exception as exc:
                 self.logger.warning("[mimo-tts] Record send failed, fallback to file: %s", exc)
@@ -967,6 +1113,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             "persistence_path": str(persistence_path),
             "recovery_max_age_hours": self.plugin_config.job_recovery_max_age_hours,
             "audio_cleanup": self.plugin_config.background_audio_cleanup,
+            "audio_transport": self.plugin_config.audio_transport,
+            "delivery_segment_chars": self.plugin_config.delivery_segment_chars,
+            "base64_max_mb": self.plugin_config.base64_max_mb,
             "platform_preflight": self.plugin_config.platform_preflight_enabled,
             "platforms": self._platform_capabilities(),
         }
@@ -975,6 +1124,8 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         return self._job_manager.list_tasks(limit=limit) if self._job_manager is not None else []
 
     async def _process_tts_job(self, job: TTSJob) -> pathlib.Path:
+        if self.plugin_config.audio_transport == "base64":
+            return await self._synthesize_delivery_bundle(job)
         return await self.synthesize_text(
             job.text,
             voice_name=job.voice or None,
@@ -993,6 +1144,33 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         sent = await self.context.send_message(session, self._message_chain(components))
         if sent is False:
             raise RuntimeError("AstrBot 未找到可主动发送该会话的平台。")
+
+    async def _send_audio_path_to_session(
+        self,
+        session: str,
+        audio_path: pathlib.Path,
+    ) -> None:
+        record_error: Exception | None = None
+        if Record is not None:
+            source = self._audio_source(audio_path)
+            try:
+                await self._send_to_session(
+                    session, [Record(file=source)]
+                )
+            except Exception as exc:
+                record_error = exc
+                self.logger.warning(
+                    "[mimo-tts] proactive Record send failed, retrying as File: %s", exc
+                )
+            else:
+                return
+        else:
+            record_error = RuntimeError("Record component unavailable")
+        if not self.plugin_config.file_fallback_enabled:
+            raise record_error
+        await self._send_to_session(
+            session, [File(name=audio_path.name, file=str(audio_path))]
+        )
 
     def _platform_capabilities(self) -> list[dict[str, Any]]:
         manager = getattr(self.context, "platform_manager", None)
@@ -1025,33 +1203,20 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
 
     async def _deliver_tts_job(self, job: TTSJob, output: pathlib.Path) -> None:
         self._preflight_session(job.session)
-        record_error: Exception | None = None
-        if Record is not None:
-            try:
-                await self._send_to_session(job.session, [Record(file=str(output))])
-            except Exception as exc:
-                record_error = exc
-                self.logger.warning(
-                    "[mimo-tts] proactive Record send failed, retrying as File: %s", exc
-                )
-            else:
-                record_error = None
-        else:
-            record_error = RuntimeError("Record component unavailable")
-        if record_error is not None:
-            if not self.plugin_config.file_fallback_enabled:
-                raise record_error
-            await self._send_to_session(
-                job.session, [File(name=output.name, file=str(output))]
-            )
+        paths = self._delivery_audio_paths(output)
+        for path in paths:
+            await self._send_audio_path_to_session(job.session, path)
         self.logger.info(
-            "[mimo-tts] background audio delivered: job=%s source=%s session=%s",
+            "[mimo-tts] background audio delivered: job=%s source=%s session=%s segments=%s",
             job.id,
             job.source,
             clip_log_text(job.session),
+            len(paths),
         )
         if self.plugin_config.background_audio_cleanup == "after_delivery":
-            output.unlink(missing_ok=True)
+            await asyncio.to_thread(self._delete_delivery_output, output, paths)
+        else:
+            await asyncio.to_thread(self._cleanup_outputs)
 
     async def _handle_tts_job_failure(self, job: TTSJob, exc: Exception) -> None:
         self.logger.warning(
@@ -1439,6 +1604,12 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             f"segment: {self.plugin_config.segment_enabled}, threshold={self.plugin_config.segment_threshold_chars}",
             f"reply_mode: {self.plugin_config.reply_mode}",
             f"delivery_mode: {self.plugin_config.delivery_mode}",
+            (
+                "audio_transport: "
+                f"{self.plugin_config.audio_transport}, "
+                f"segment_chars={self.plugin_config.delivery_segment_chars}, "
+                f"base64_max={self.plugin_config.base64_max_mb}MB"
+            ),
             (
                 "queue: "
                 f"queued={queue['queued_jobs']}, running={queue['running_jobs']}, "
