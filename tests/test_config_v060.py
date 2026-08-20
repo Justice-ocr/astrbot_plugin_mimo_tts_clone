@@ -17,7 +17,7 @@ class ConfigV060Tests(unittest.TestCase):
             "auto_tts_enabled": True,
         })
 
-        self.assertEqual(migrated["config_version"], 2)
+        self.assertEqual(migrated["config_version"], 3)
         self.assertEqual(migrated["api_key"], "secret")
         self.assertEqual(migrated["reply_mode"], "audio_only")
         self.assertEqual(migrated["delivery_mode"], "blocking")

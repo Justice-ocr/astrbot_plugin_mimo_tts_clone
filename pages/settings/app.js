@@ -156,6 +156,8 @@ function configPayload() {
     reply_mode: $('reply-mode').value,
     delivery_mode: $('delivery-mode').value,
     audio_transport: $('audio-transport').value,
+    shared_path_linux: $('shared-path-linux').value.trim(),
+    shared_path_windows: $('shared-path-windows').value.trim(),
     delivery_segment_chars: Number($('delivery-segment-chars').value || 500),
     base64_max_mb: Number($('base64-max-mb').value || 8),
     background_queue_size: Number($('background-queue-size').value || 20),
@@ -484,6 +486,8 @@ function applyState(payload) {
   $('reply-mode').value = state.config.reply_mode || 'text_and_audio';
   $('delivery-mode').value = state.config.delivery_mode || 'background';
   $('audio-transport').value = state.config.audio_transport || 'base64';
+  $('shared-path-linux').value = state.config.shared_path_linux || '/mnt/c/Users/Public/mimo_tts_audio';
+  $('shared-path-windows').value = state.config.shared_path_windows || 'C:\\Users\\Public\\mimo_tts_audio';
   $('delivery-segment-chars').value = state.config.delivery_segment_chars || 500;
   $('base64-max-mb').value = state.config.base64_max_mb || 8;
   $('background-queue-size').value = state.config.background_queue_size || 20;

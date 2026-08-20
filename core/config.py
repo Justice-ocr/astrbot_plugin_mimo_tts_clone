@@ -6,7 +6,7 @@ from typing import Any
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": 2,
+    "config_version": 3,
     "api_key": "",
     "base_url": "https://api.xiaomimimo.com/v1",
     "model": "mimo-v2.5-tts-voiceclone",
@@ -16,6 +16,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_voice_file_mb": 10,
     "max_concurrency": 2,
     "audio_transport": "base64",
+    "shared_path_linux": "/mnt/c/Users/Public/mimo_tts_audio",
+    "shared_path_windows": "C:\\Users\\Public\\mimo_tts_audio",
     "delivery_segment_chars": 500,
     "base64_max_mb": 8,
     "reply_mode": "text_and_audio",
@@ -73,6 +75,8 @@ class PluginConfig:
     max_voice_file_mb: int
     max_concurrency: int
     audio_transport: str
+    shared_path_linux: str
+    shared_path_windows: str
     delivery_segment_chars: int
     base64_max_mb: int
     reply_mode: str
@@ -137,7 +141,7 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             if key in raw:
                 cfg[key] = raw[key]
 
-    cfg["config_version"] = 2
+    cfg["config_version"] = 3
     cfg["api_key"] = str(cfg.get("api_key") or "").strip()
     cfg["base_url"] = str(cfg.get("base_url") or DEFAULT_CONFIG["base_url"]).rstrip("/")
     cfg["model"] = DEFAULT_CONFIG["model"]
@@ -147,7 +151,15 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg["max_voice_file_mb"] = _int_between(cfg.get("max_voice_file_mb"), 10, 1, 10)
     cfg["max_concurrency"] = _int_between(cfg.get("max_concurrency"), 2, 1, 4)
     transport = str(cfg.get("audio_transport") or "base64").strip().lower()
-    cfg["audio_transport"] = transport if transport in {"base64", "path"} else "base64"
+    cfg["audio_transport"] = (
+        transport if transport in {"base64", "path", "shared_path"} else "base64"
+    )
+    cfg["shared_path_linux"] = str(
+        cfg.get("shared_path_linux") or DEFAULT_CONFIG["shared_path_linux"]
+    ).strip().rstrip("/\\")
+    cfg["shared_path_windows"] = str(
+        cfg.get("shared_path_windows") or DEFAULT_CONFIG["shared_path_windows"]
+    ).strip().rstrip("/\\")
     cfg["delivery_segment_chars"] = _int_between(
         cfg.get("delivery_segment_chars"), 500, 1, cfg["max_text_chars"]
     )
@@ -249,7 +261,7 @@ def build_plugin_config(raw: dict[str, Any] | None) -> PluginConfig:
 
 
 def migrate_config(raw: dict[str, Any] | None) -> dict[str, Any]:
-    """Migrate persisted v0.5.x configuration into the v0.6 schema."""
+    """Migrate persisted plugin configuration into the current schema."""
     if not isinstance(raw, dict):
         return {}
     migrated = copy.deepcopy(raw)
@@ -265,7 +277,11 @@ def migrate_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         migrated.setdefault("tts_rate_limit_rpm", 90)
         migrated.setdefault("platform_preflight_enabled", True)
         migrated.setdefault("live_api_test_enabled", False)
-    migrated["config_version"] = 2
+    if version < 3:
+        migrated.setdefault("audio_transport", "base64")
+        migrated.setdefault("shared_path_linux", DEFAULT_CONFIG["shared_path_linux"])
+        migrated.setdefault("shared_path_windows", DEFAULT_CONFIG["shared_path_windows"])
+    migrated["config_version"] = 3
     return migrated
 
 

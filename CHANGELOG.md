@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.1 - 2026-08-20
+
+### Added
+
+- 新增 `shared_path` Windows/Linux 专项传输模式，支持 WSL/Linux 生成音频后映射为 Windows NapCat 可见路径。
+- 新增 Linux 共享目录和 Windows 映射目录配置。
+
+### Fixed
+
+- 修复 Base64 Record 失败后错误回退为 Linux 本地路径的问题。
+- 共享路径模式下 File fallback 也使用映射后的 Windows 路径。
+
 ## v0.7.0 - 2026-08-18
 
 ### Added

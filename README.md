@@ -121,6 +121,9 @@ pip install -r requirements.txt
 | --- | --- | --- |
 | `reply_mode` | `text_and_audio` | 默认保留文字，并在语音完成后补发音频 |
 | `delivery_mode` | `background` | 文字先发，TTS 不阻塞当前回复；可改为 `blocking` 兼容旧行为 |
+| `audio_transport` | `shared_path`（WSL/Linux + Windows） | 共享目录模式发送 Windows 可见路径；Base64 仍可用于其他部署 |
+| `shared_path_linux` | `/mnt/c/Users/Public/mimo_tts_audio` | Linux/WSL 侧可写共享目录 |
+| `shared_path_windows` | `C:\\Users\\Public\\mimo_tts_audio` | NapCat 所在 Windows 侧对应目录 |
 | `background_queue_size` | `20` | 后台等待任务上限；显式 `/tts` 任务优先于自动语音任务 |
 | `tts_timeout_seconds` | `120` | 单次 MiMo 请求超时 |
 | `tts_max_retries` | `2` | 插件只对限流与瞬态服务错误执行指数退避重试；SDK 重试关闭 |
@@ -197,7 +200,8 @@ Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrB
 - 每个任务保存原始会话 UMO、文本、来源、状态、时间、错误和后台产物路径，不保存 AstrBot event 对象。
 - 插件启动时恢复未结束任务；如果完整后台产物仍存在，只执行主动发送，不重新合成。
 - 显式 `/tts` 比自动语音任务优先，同一会话始终按提交顺序处理。取消任务不会杀死整个 worker。
-- 默认使用 `base64://` Record 传输，不依赖 AstrBot 与 NapCat 共享本地路径；`audio_transport=path` 可恢复旧的共享路径模式。
+- 默认支持 `base64://` Record 传输；针对 AstrBot 在 WSL/Linux、NapCat 在 Windows 且两者共享目录的场景，设置 `audio_transport=shared_path`，插件会先把 WAV 复制到 Linux 共享目录，再将对应 Windows 路径交给 NapCat。
+- `shared_path` 模式下 Record 失败时的 File fallback 也使用 Windows 映射路径，不会再次发送 Linux 本地路径；`audio_transport=path` 保留旧行为。
 - 后台长文本会按 `delivery_segment_chars` 分段并发生成，全部成功后按顺序逐条发送。单段原始 WAV 超过 `base64_max_mb` 时停止交付并报告失败。
 - Record 主动发送失败时，在 `file_fallback_enabled=true` 下会重新构造 File 消息发送。
 - Pages 每 5 秒刷新任务和诊断，可取消单个活动任务、清理历史或二次确认后取消全部。
@@ -205,9 +209,9 @@ Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrB
 
 ## 从 v0.5.x 升级
 
-现有配置首次加载时自动迁移到 `config_version=2`。API Key、回复模式、交付模式、自动语音访问控制和音色数据保持不变；新增可靠性与任务配置使用 0.6.0 默认值。迁移结果会随下一次 Pages 保存写入本地配置。
+现有配置首次加载时自动迁移到 `config_version=3`。API Key、回复模式、交付模式、自动语音访问控制和音色数据保持不变；新增可靠性、任务和共享路径配置会使用默认值。迁移结果会随下一次 Pages 保存写入本地配置。
 
-默认行为仍是 `text_and_audio + background`：文字先发，后台生成一段或多段 WAV，并通过 Base64 向原会话按序补发。需要共享路径行为时设置 `audio_transport=path`，需要阻塞行为时设置 `delivery_mode=blocking`。
+默认行为仍是 `text_and_audio + background`：文字先发，后台生成一段或多段 WAV，并按配置的传输方式向原会话补发。WSL/Linux + Windows NapCat 请设置 `audio_transport=shared_path`，需要阻塞行为时设置 `delivery_mode=blocking`。
 
 ## 给其他插件复用
 
@@ -243,7 +247,7 @@ audio_path = await plugin.text_to_speech(
 | --- | --- |
 | 插件名 | `astrbot_plugin_mimo_tts_clone` |
 | 展示名 | MiMo TTS 音色克隆 |
-| 当前版本 | `v0.7.0` |
+| 当前版本 | `v0.7.1` |
 | 作者 | Justice-ocr |
 | 作者简介 | AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、Pages 管理体验与实用型机器人扩展 |
 | AstrBot 版本 | `>=4.16.0,<5`（后台文字先发依赖 `after_message_sent` 钩子） |

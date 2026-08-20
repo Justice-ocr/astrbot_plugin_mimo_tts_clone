@@ -115,10 +115,13 @@
           </label>
           <label>音频传输
             <select id="audio-transport">
+              <option value="shared_path">共享路径（WSL/Linux + Windows）</option>
               <option value="base64">Base64（跨系统）</option>
               <option value="path">本地路径（共享文件系统）</option>
             </select>
           </label>
+          <label>Linux 共享目录<input id="shared-path-linux" type="text" placeholder="/mnt/c/Users/Public/mimo_tts_audio" /></label>
+          <label>Windows 共享目录<input id="shared-path-windows" type="text" placeholder="C:\\Users\\Public\\mimo_tts_audio" /></label>
           <label>Base64 每段字符数<input id="delivery-segment-chars" type="number" min="1" /></label>
           <label>单段音频上限 MB<input id="base64-max-mb" type="number" min="1" max="40" /></label>
           <label>后台队列容量<input id="background-queue-size" type="number" min="1" max="100" /></label>

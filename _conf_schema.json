@@ -142,9 +142,21 @@
   "audio_transport": {
     "type": "string",
     "description": "音频传输方式",
-    "options": ["base64", "path"],
-    "hint": "base64 可跨 Linux、Windows 和 Android；path 仅适合 AstrBot 与平台共享文件系统的场景。",
+    "options": ["shared_path", "base64", "path"],
+    "hint": "shared_path 适用于 WSL/Linux 与 Windows NapCat 共享目录；base64 适用于跨系统但 NapCat 支持良好的场景；path 为旧模式。",
     "default": "base64"
+  },
+  "shared_path_linux": {
+    "type": "string",
+    "description": "Linux 共享目录",
+    "hint": "WSL 默认使用 /mnt/c/Users/Public/mimo_tts_audio；该目录必须能被 Linux 写入。",
+    "default": "/mnt/c/Users/Public/mimo_tts_audio"
+  },
+  "shared_path_windows": {
+    "type": "string",
+    "description": "Windows 共享目录",
+    "hint": "填写 NapCat 所在 Windows 中对应的目录，例如 C:\\Users\\Public\\mimo_tts_audio。",
+    "default": "C:\\Users\\Public\\mimo_tts_audio"
   },
   "delivery_segment_chars": {
     "type": "int",

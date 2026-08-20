@@ -46,6 +46,25 @@ class V070DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(base64.b64decode(source.removeprefix("base64://")), b"test-audio")
         await plugin.terminate()
 
+    async def test_shared_path_stages_audio_and_returns_windows_path(self):
+        linux_root = Path(self.temp_dir.name) / "shared"
+        plugin = self.plugin({
+            "audio_transport": "shared_path",
+            "shared_path_linux": str(linux_root),
+            "shared_path_windows": r"C:\Users\Public\mimo_tts_audio",
+        })
+        audio = Path(self.temp_dir.name) / "audio.wav"
+        audio.write_bytes(b"shared-audio")
+
+        source, staged = plugin._transport_source(audio)
+
+        self.assertEqual(source, r"C:\Users\Public\mimo_tts_audio\mimo_tts_transport_" + staged.name.split("mimo_tts_transport_", 1)[1])
+        self.assertIsNotNone(staged)
+        self.assertTrue(staged.exists())
+        self.assertEqual(staged.read_bytes(), b"shared-audio")
+        staged.unlink()
+        await plugin.terminate()
+
     async def test_delivery_bundle_generates_segments_concurrently_and_writes_manifest_last(self):
         plugin = self.plugin({"max_concurrency": 2})
         segments = ["first", "second"]

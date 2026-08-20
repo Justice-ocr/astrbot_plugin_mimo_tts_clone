@@ -111,7 +111,7 @@ class V060IntegrationTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         context.send_message = send
-        plugin = self.plugin(context=context)
+        plugin = self.plugin({"audio_transport": "path"}, context)
         output = Path(self.temp_dir.name) / "audio.wav"
         output.write_bytes(b"audio")
         job = self.module.TTSJob(session="unknown:FriendMessage:1", text="hello")

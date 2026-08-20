@@ -5,7 +5,7 @@ desc: >
   提供 MiMo v2.5 voiceclone 官方接口接入、Pages 音色管理、授权参考音频上传、
   试听诊断、全局/群/用户/情绪默认音色设置、发送前 AI 语音导演、聊天命令朗读、
   普通 LLM 回复概率语音化，以及面向其他插件复用的 TTS 服务方法和 LLM 工具。
-version: v0.7.0
+version: v0.7.1
 author: Justice-ocr
 author_desc: >
   Justice-ocr，AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、

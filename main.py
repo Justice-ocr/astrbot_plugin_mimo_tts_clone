@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import pathlib
+from pathlib import PureWindowsPath
 import random
 import re
 import shlex
@@ -60,7 +61,7 @@ _PENDING_BACKGROUND_JOB_EXTRA = "mimo_tts_pending_background_job_v1"
     "astrbot_plugin_mimo_tts_clone",
     "Justice-ocr",
     "MiMo 官方 TTS 音色克隆、多音色切换与 AI 语音导演",
-    "0.7.0",
+    "0.7.1",
 )
 class MimoTTSClonePlugin(PagesAPIMixin, Star):
     def __init__(self, context: Context, config: dict):
@@ -374,6 +375,19 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             bundle_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
             for path in bundle_dirs[max_files:]:
                 shutil.rmtree(path, ignore_errors=True)
+
+        if self.plugin_config.audio_transport == "shared_path":
+            shared_root = pathlib.Path(self.plugin_config.shared_path_linux).expanduser()
+            if shared_root.is_dir() and retention_days > 0:
+                cutoff = now - retention_days * 86400
+                for path in shared_root.glob("mimo_tts_transport_*"):
+                    if not path.is_file():
+                        continue
+                    try:
+                        if path.stat().st_mtime < cutoff:
+                            path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def list_available_voices(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
         """Public service helper for other plugins that need voice metadata."""
@@ -1007,20 +1021,28 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         )
 
     def _audio_component(self, audio_path: pathlib.Path):
+        source, _staged = self._transport_source(audio_path)
         if Record is not None:
             try:
-                return Record(file=self._audio_source(audio_path))
+                return Record(file=source)
             except Exception as exc:
                 self.logger.warning(
                     "[mimo-tts] failed to build Record payload, fallback to file: %s", exc
                 )
         if self.plugin_config.file_fallback_enabled:
-            return File(name=audio_path.name, file=str(audio_path))
+            return File(name=audio_path.name, file=source)
         return None
 
     def _audio_source(self, audio_path: pathlib.Path) -> str:
+        source, _staged = self._transport_source(audio_path)
+        return source
+
+    def _transport_source(self, audio_path: pathlib.Path) -> tuple[str, pathlib.Path | None]:
+        """Return the platform-visible source and an optional temporary staged file."""
         if self.plugin_config.audio_transport == "path":
-            return str(audio_path)
+            return str(audio_path), None
+        if self.plugin_config.audio_transport == "shared_path":
+            return self._stage_shared_audio(audio_path)
         size = audio_path.stat().st_size
         if size > self.plugin_config.base64_max_bytes:
             raise RuntimeError(
@@ -1028,7 +1050,42 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 f"超过 Base64 上限 {self.plugin_config.base64_max_mb} MB。"
             )
         payload = base64.b64encode(audio_path.read_bytes()).decode("ascii")
-        return f"base64://{payload}"
+        return f"base64://{payload}", None
+
+    def _stage_shared_audio(
+        self,
+        audio_path: pathlib.Path,
+    ) -> tuple[str, pathlib.Path]:
+        source = audio_path.resolve()
+        if not source.is_file():
+            raise RuntimeError(f"音频文件不存在：{source}")
+        linux_root = pathlib.Path(self.plugin_config.shared_path_linux).expanduser()
+        windows_root = self.plugin_config.shared_path_windows
+        if not str(linux_root) or not windows_root:
+            raise RuntimeError("shared_path 模式需要同时配置 Linux 和 Windows 共享目录。")
+        try:
+            linux_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"无法创建 Linux 共享目录：{linux_root} ({exc})") from exc
+
+        try:
+            relative = source.relative_to(linux_root.resolve())
+            staged = source
+        except ValueError:
+            staged = linux_root / f"mimo_tts_transport_{time.time_ns()}_{source.name}"
+            temporary = staged.with_suffix(staged.suffix + ".tmp")
+            try:
+                shutil.copy2(source, temporary)
+                temporary.replace(staged)
+            except OSError as exc:
+                temporary.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"无法将音频复制到 Linux 共享目录：{linux_root} ({exc})"
+                ) from exc
+            relative = staged.relative_to(linux_root.resolve())
+
+        windows_path = str(PureWindowsPath(windows_root) / PureWindowsPath(relative.as_posix()))
+        return windows_path, staged
 
     @staticmethod
     def _delivery_audio_paths(output: pathlib.Path) -> list[pathlib.Path]:
@@ -1063,16 +1120,19 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         return component.__class__.__name__ == "Plain"
 
     async def _send_audio_result(self, event: AstrMessageEvent, audio_path: pathlib.Path) -> None:
+        source, _staged = self._transport_source(audio_path)
         if Record is not None:
             try:
-                await event.send(
-                    event.chain_result([Record(file=self._audio_source(audio_path))])
-                )
+                await event.send(event.chain_result([Record(file=source)]))
                 return
             except Exception as exc:
-                self.logger.warning("[mimo-tts] Record send failed, fallback to file: %s", exc)
+                self.logger.warning(
+                    "[mimo-tts] Record send failed, fallback to file: %s", exc
+                )
+        if self.plugin_config.audio_transport == "base64":
+            raise RuntimeError("NapCat 未接受 Base64 语音，已禁止回退为本地路径。")
         if self.plugin_config.file_fallback_enabled:
-            await event.send(event.chain_result([File(name=audio_path.name, file=str(audio_path))]))
+            await event.send(event.chain_result([File(name=audio_path.name, file=source)]))
 
     def _background_manager(self) -> TTSJobManager:
         if self._job_manager is None:
@@ -1124,7 +1184,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         return self._job_manager.list_tasks(limit=limit) if self._job_manager is not None else []
 
     async def _process_tts_job(self, job: TTSJob) -> pathlib.Path:
-        if self.plugin_config.audio_transport == "base64":
+        if self.plugin_config.audio_transport in {"base64", "shared_path"}:
             return await self._synthesize_delivery_bundle(job)
         return await self.synthesize_text(
             job.text,
@@ -1150,13 +1210,11 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         session: str,
         audio_path: pathlib.Path,
     ) -> None:
+        source, _staged = self._transport_source(audio_path)
         record_error: Exception | None = None
         if Record is not None:
-            source = self._audio_source(audio_path)
             try:
-                await self._send_to_session(
-                    session, [Record(file=source)]
-                )
+                await self._send_to_session(session, [Record(file=source)])
             except Exception as exc:
                 record_error = exc
                 self.logger.warning(
@@ -1166,10 +1224,12 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 return
         else:
             record_error = RuntimeError("Record component unavailable")
+        if self.plugin_config.audio_transport == "base64":
+            raise record_error
         if not self.plugin_config.file_fallback_enabled:
             raise record_error
         await self._send_to_session(
-            session, [File(name=audio_path.name, file=str(audio_path))]
+            session, [File(name=audio_path.name, file=source)]
         )
 
     def _platform_capabilities(self) -> list[dict[str, Any]]:
