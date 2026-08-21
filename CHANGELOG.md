@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.2 - 2026-08-21
+
+### Fixed
+
+- `shared_path` 模式改为直接调用 aiocqhttp 底层 OneBot API 发送原始 `record` 消息，绕过 AstrBot 的 Record/File 路径处理，适配 WSL/Linux AstrBot 与 Windows NapCat 共享目录场景。
+- 前台和后台共享路径发送统一支持群聊、私聊，并保留原有 Base64、旧路径和文本回复链路。
+
 ## v0.7.1 - 2026-08-20
 
 ### Added

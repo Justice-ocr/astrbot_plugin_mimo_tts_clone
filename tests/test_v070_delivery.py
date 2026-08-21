@@ -65,6 +65,89 @@ class V070DeliveryTests(unittest.IsolatedAsyncioTestCase):
         staged.unlink()
         await plugin.terminate()
 
+    async def test_shared_path_foreground_sends_raw_onebot_record(self):
+        class FakeBot:
+            def __init__(self):
+                self.calls = []
+
+            async def send_group_msg(self, **kwargs):
+                self.calls.append(kwargs)
+
+        linux_root = Path(self.temp_dir.name) / "shared"
+        plugin = self.plugin({
+            "audio_transport": "shared_path",
+            "shared_path_linux": str(linux_root),
+            "shared_path_windows": r"C:\Users\Public\mimo_tts_audio",
+        })
+        audio = Path(self.temp_dir.name) / "audio.wav"
+        audio.write_bytes(b"shared-audio")
+        bot = FakeBot()
+        event = types.SimpleNamespace(
+            bot=bot,
+            message_obj=types.SimpleNamespace(raw_message={"self_id": "10001"}),
+            get_group_id=lambda: "20002",
+            get_sender_id=lambda: "30003",
+        )
+
+        await plugin._send_audio_result(event, audio)
+
+        self.assertEqual(len(bot.calls), 1)
+        self.assertEqual(bot.calls[0]["group_id"], 20002)
+        self.assertEqual(bot.calls[0]["self_id"], "10001")
+        self.assertEqual(bot.calls[0]["message"][0]["type"], "record")
+        self.assertTrue(
+            bot.calls[0]["message"][0]["data"]["file"].startswith(
+                "C:\\Users\\Public\\mimo_tts_audio\\"
+            )
+        )
+        await plugin.terminate()
+
+    async def test_shared_path_background_sends_raw_onebot_private_record(self):
+        class FakeBot:
+            def __init__(self):
+                self.calls = []
+
+            async def send_private_msg(self, **kwargs):
+                self.calls.append(kwargs)
+
+        class FakePlatform:
+            def __init__(self, bot):
+                self.bot = bot
+
+            def meta(self):
+                return types.SimpleNamespace(id="知更鸟", name="aiocqhttp")
+
+            def get_client(self):
+                return self.bot
+
+        context = _Context()
+        bot = FakeBot()
+        context.platform_manager = types.SimpleNamespace(
+            get_insts=lambda: [FakePlatform(bot)]
+        )
+        linux_root = Path(self.temp_dir.name) / "shared"
+        plugin = self.plugin({
+            "audio_transport": "shared_path",
+            "shared_path_linux": str(linux_root),
+            "shared_path_windows": r"C:\Users\Public\mimo_tts_audio",
+        }, context)
+        audio = Path(self.temp_dir.name) / "audio.wav"
+        audio.write_bytes(b"shared-audio")
+
+        await plugin._send_audio_path_to_session(
+            "知更鸟:FriendMessage:40004", audio
+        )
+
+        self.assertEqual(bot.calls[0]["user_id"], 40004)
+        self.assertEqual(bot.calls[0]["message"][0]["type"], "record")
+        self.assertTrue(
+            bot.calls[0]["message"][0]["data"]["file"].startswith(
+                "C:\\Users\\Public\\mimo_tts_audio\\"
+            )
+        )
+        self.assertEqual(context.sent_messages, [])
+        await plugin.terminate()
+
     async def test_delivery_bundle_generates_segments_concurrently_and_writes_manifest_last(self):
         plugin = self.plugin({"max_concurrency": 2})
         segments = ["first", "second"]

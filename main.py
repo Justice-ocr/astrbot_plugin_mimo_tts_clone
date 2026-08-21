@@ -61,7 +61,7 @@ _PENDING_BACKGROUND_JOB_EXTRA = "mimo_tts_pending_background_job_v1"
     "astrbot_plugin_mimo_tts_clone",
     "Justice-ocr",
     "MiMo 官方 TTS 音色克隆、多音色切换与 AI 语音导演",
-    "0.7.1",
+    "0.7.2",
 )
 class MimoTTSClonePlugin(PagesAPIMixin, Star):
     def __init__(self, context: Context, config: dict):
@@ -1119,8 +1119,129 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             return True
         return component.__class__.__name__ == "Plain"
 
+    @staticmethod
+    def _parse_aiocqhttp_session(session: str) -> tuple[bool, int]:
+        """Parse an AstrBot aiocqhttp UMO into message type and numeric ID."""
+        parts = str(session or "").split(":", 2)
+        if len(parts) != 3 or not parts[0].strip():
+            raise RuntimeError("shared_path 无法解析目标会话。")
+        message_type = parts[1]
+        if message_type not in {"GroupMessage", "FriendMessage"}:
+            raise RuntimeError(f"shared_path 不支持会话类型：{message_type}")
+        raw_id = parts[2].strip()
+        if not raw_id.isdigit():
+            raise RuntimeError(f"shared_path 目标 ID 无效：{raw_id}")
+        return message_type == "GroupMessage", int(raw_id)
+
+    def _find_aiocqhttp_client(self, session: str) -> Any:
+        """Find the aiocqhttp bot used by a background session."""
+        manager = getattr(self.context, "platform_manager", None)
+        platforms = []
+        get_insts = getattr(manager, "get_insts", None)
+        if callable(get_insts):
+            try:
+                platforms = list(get_insts() or [])
+            except Exception:
+                platforms = []
+        if not platforms:
+            platforms = list(getattr(manager, "platform_insts", []) or [])
+        platform_id = str(session or "").split(":", 1)[0]
+        for platform in platforms:
+            try:
+                meta = platform.meta()
+                identifiers = {
+                    str(getattr(meta, "id", "") or ""),
+                    str(getattr(meta, "name", "") or ""),
+                }
+                if platform_id not in identifiers:
+                    continue
+            except Exception:
+                continue
+            get_client = getattr(platform, "get_client", None)
+            client = get_client() if callable(get_client) else getattr(platform, "bot", None)
+            if client is not None:
+                return client
+        raise RuntimeError(f"找不到 aiocqhttp 平台客户端：{platform_id or session}")
+
+    @staticmethod
+    async def _call_onebot_message(
+        bot: Any,
+        *,
+        is_group: bool,
+        target_id: int,
+        source: str,
+        self_id: Any = None,
+    ) -> None:
+        """Send a raw record segment without AstrBot File/Record conversion."""
+        action = "send_group_msg" if is_group else "send_private_msg"
+        params = {
+            "group_id" if is_group else "user_id": target_id,
+            "message": [{"type": "record", "data": {"file": source}}],
+        }
+        if self_id not in (None, ""):
+            params["self_id"] = self_id
+        method = getattr(bot, action, None)
+        if callable(method):
+            await method(**params)
+            return
+        call_action = getattr(bot, "call_action", None)
+        if callable(call_action):
+            await call_action(action, **params)
+            return
+        raise RuntimeError("aiocqhttp 客户端不支持 OneBot 消息发送接口。")
+
+    async def _send_shared_path_audio(
+        self,
+        *,
+        source: str,
+        event: AstrMessageEvent | None = None,
+        session: str = "",
+    ) -> None:
+        """Send a shared Windows path directly through the OneBot client."""
+        if event is not None:
+            bot = getattr(event, "bot", None)
+            if bot is None:
+                raise RuntimeError("当前事件没有可用的 aiocqhttp 底层客户端。")
+            get_group_id = getattr(event, "get_group_id", None)
+            group_id = str(get_group_id() or "") if callable(get_group_id) else ""
+            get_sender_id = getattr(event, "get_sender_id", None)
+            sender_id = str(get_sender_id() or "") if callable(get_sender_id) else ""
+            raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            self_id = raw_message.get("self_id") if isinstance(raw_message, dict) else None
+            if group_id.isdigit():
+                await self._call_onebot_message(
+                    bot,
+                    is_group=True,
+                    target_id=int(group_id),
+                    source=source,
+                    self_id=self_id,
+                )
+                return
+            if sender_id.isdigit():
+                await self._call_onebot_message(
+                    bot,
+                    is_group=False,
+                    target_id=int(sender_id),
+                    source=source,
+                    self_id=self_id,
+                )
+                return
+            raise RuntimeError("当前事件缺少有效的群号或用户号。")
+
+        is_group, target_id = self._parse_aiocqhttp_session(session)
+        bot = self._find_aiocqhttp_client(session)
+        await self._call_onebot_message(
+            bot,
+            is_group=is_group,
+            target_id=target_id,
+            source=source,
+        )
+
     async def _send_audio_result(self, event: AstrMessageEvent, audio_path: pathlib.Path) -> None:
         source, _staged = self._transport_source(audio_path)
+        if self.plugin_config.audio_transport == "shared_path":
+            await self._send_shared_path_audio(source=source, event=event)
+            return
         if Record is not None:
             try:
                 await event.send(event.chain_result([Record(file=source)]))
@@ -1211,6 +1332,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         audio_path: pathlib.Path,
     ) -> None:
         source, _staged = self._transport_source(audio_path)
+        if self.plugin_config.audio_transport == "shared_path":
+            await self._send_shared_path_audio(source=source, session=session)
+            return
         record_error: Exception | None = None
         if Record is not None:
             try:
