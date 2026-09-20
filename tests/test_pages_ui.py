@@ -12,10 +12,10 @@ class PagesUITests(unittest.TestCase):
         css = (PAGES_DIR / "style.css").read_text(encoding="utf-8")
 
         self.assertIn("MiMo Sound Studio", html)
-        self.assertIn("Firefly Inspired Voice Console", html)
+        self.assertIn("MiMo TTS", html)
         self.assertIn("studio-shell", html)
         self.assertIn("studio-hero", html)
-        self.assertIn("workflow-strip", html)
+        self.assertNotIn('class="workflow-strip"', html)
         self.assertIn("top-gradient-highlight", html)
         self.assertIn("发送策略", html)
         self.assertIn("一键诊断", html)
@@ -163,13 +163,14 @@ class PagesUITests(unittest.TestCase):
         html = (PAGES_DIR / "index.html").read_text(encoding="utf-8")
 
         save_config = js.split("async function saveConfig()", 1)[1].split("function validateVoiceUpload", 1)[0]
-        preview = js.split("async function preview()", 1)[1].split("async function testConnection", 1)[0]
+        preview = (PAGES_DIR / "studio.js").read_text(encoding="utf-8")
         voice_action = js.split("async function voiceAction", 1)[1].split("async function setEmotionDefault", 1)[0]
 
         self.assertIn("await refresh();", save_config)
         self.assertNotIn('target="_blank"', html)
-        self.assertIn("playPromise", preview)
-        self.assertIn("请手动点击播放器播放", preview)
+        self.assertIn("$('studio-audio').src = job.audio_data", preview)
+        self.assertIn('id="studio-audio" controls', html)
+        self.assertNotIn('id="preview-btn"', html)
         self.assertIn("lockedButton", voice_action)
         self.assertIn("setBusy(lockedButton, true", voice_action)
         self.assertIn("setBusy(lockedButton, false", voice_action)

@@ -8,6 +8,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from .model_catalog import MODELS, BUILTIN_VOICES
 
 
 @dataclass(slots=True)
@@ -71,25 +72,80 @@ class MimoOfficialClient:
         if client is not None:
             await client.close()
 
+    async def stream_pcm(self, *, text: str, voice: str, context: str = ""):
+        """Yield bounded PCM16LE mono chunks; callers own playback and persistence."""
+        if not self.config.api_key:
+            raise RuntimeError("MIMO API Key is not configured.")
+        payload = self.build_payload(
+            text=text, voice_data_url=voice, context=context, model=MODELS["builtin"],
+        )
+        payload["audio"]["format"] = "pcm16"
+        payload["stream"] = True
+        client = await self._get_client()
+        stream = await client.chat.completions.create(**payload)
+        total = 0
+        remainder = b""
+        try:
+            async for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                if getattr(choices[0], "finish_reason", None) == "content_filter":
+                    raise MimoInvalidResponseError("MiMo declined the request due to content filtering.")
+                audio = getattr(getattr(choices[0], "delta", None), "audio", None)
+                if not audio:
+                    continue
+                encoded = audio.get("data") if isinstance(audio, dict) else getattr(audio, "data", None)
+                if not encoded:
+                    continue
+                try:
+                    raw = base64.b64decode(encoded, validate=True)
+                except (binascii.Error, ValueError, TypeError) as exc:
+                    raise MimoInvalidResponseError("MiMo returned invalid streaming audio.") from exc
+                total += len(raw)
+                if total > 24 * 1024 * 1024:
+                    raise MimoInvalidResponseError("Streaming audio exceeds the preview limit.")
+                raw = remainder + raw
+                boundary = len(raw) - len(raw) % 2
+                remainder = raw[boundary:]
+                # Bound each bridge/playback chunk even if the provider sends one large result.
+                for offset in range(0, boundary, 48000):
+                    yield raw[offset:min(offset + 48000, boundary)]
+            if not total or remainder:
+                raise MimoInvalidResponseError("MiMo returned empty or incomplete PCM audio.")
+        finally:
+            await stream.close()
+
     def build_payload(
         self,
         *,
         text: str,
         voice_data_url: str,
         context: str = "",
+        model: str | None = None,
     ) -> dict[str, Any]:
+        model = model or self.config.model
+        if model not in MODELS.values():
+            raise ValueError("Unsupported MiMo TTS model.")
+        if model == MODELS["design"] and not context.strip():
+            raise ValueError("VoiceDesign requires a voice description.")
+        if model == MODELS["builtin"] and voice_data_url not in BUILTIN_VOICES:
+            raise ValueError("Invalid built-in voice.")
         messages: list[dict[str, str]] = []
         if context.strip():
             messages.append({"role": "user", "content": context.strip()})
         messages.append({"role": "assistant", "content": text})
-        return {
-            "model": self.config.model,
+        payload = {
+            "model": model,
             "messages": messages,
             "audio": {
                 "format": self.config.output_format,
                 "voice": voice_data_url,
             },
         }
+        if model == MODELS["design"]:
+            payload["audio"].pop("voice")
+        return payload
 
     async def synthesize_to_file(
         self,
@@ -98,6 +154,7 @@ class MimoOfficialClient:
         voice_data_url: str,
         output_path: str | Path,
         context: str = "",
+        model: str | None = None,
     ) -> Path:
         if not self.config.api_key:
             raise RuntimeError("MIMO API Key is not configured.")
@@ -105,6 +162,7 @@ class MimoOfficialClient:
             text=text,
             voice_data_url=voice_data_url,
             context=context,
+            model=model,
         )
         client = await self._get_client()
         try:

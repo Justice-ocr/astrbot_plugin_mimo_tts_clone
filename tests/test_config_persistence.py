@@ -171,6 +171,49 @@ class _GetOnlyConfig:
 
 
 class ConfigPersistenceTests(unittest.TestCase):
+    def test_command_arguments_and_safety(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                _StarTools.data_dir = tmp
+                plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+                parsed = plugin._parse_tts_args('-v "voice one" -c "soft tone" First\nSecond -v literal')
+                self.assertEqual(parsed, ("voice one", None, "First\nSecond -v literal", "soft tone"))
+                self.assertEqual(plugin._parse_tts_args("-- -v literal")[2], "-v literal")
+                for text in ("-v", '-v "unfinished', "-unknown x", "-e invalid text"):
+                    with self.assertRaises(ValueError):
+                        plugin._parse_tts_args(text)
+                _, lyrics = plugin._parse_command_options(
+                    "--风格 pop Don't stop\n\nNext verse", {"--风格": "style"},
+                )
+                self.assertEqual(lyrics, "Don't stop\n\nNext verse")
+
+                event = types.SimpleNamespace(
+                    message_str="/tts取消", unified_msg_origin="bot:GroupMessage:123",
+                    get_extra=lambda key: types.SimpleNamespace(
+                        conversation=types.SimpleNamespace(cid="legacy")),
+                    plain_result=lambda text: text, get_sender_id=lambda: "user",
+                )
+                voice = plugin.voice_store.add_voice(
+                    "built", "", "", "", True, type="builtin", builtin_voice="冰糖",
+                )
+                plugin.voice_store.set_global_default(voice.id)
+                plugin.voice_store.set_group_default("legacy", voice.id)
+                self.assertEqual(plugin._conversation_id(event), event.unified_msg_origin)
+                self.assertEqual(
+                    plugin.voice_store.defaults()["group_defaults"][event.unified_msg_origin], voice.id,
+                )
+                plugin._is_admin = lambda event: True
+                self.assertIn("用法", await anext(plugin.cancel_task_command(event)))
+                plugin._is_admin = lambda event: False
+                plugin._queue_snapshot = lambda: (_ for _ in ()).throw(AssertionError("private state read"))
+                self.assertNotIn("queue_last_error", await anext(plugin.status_command(event)))
+                plugin._preflight_session = lambda session: None
+                with self.assertRaisesRegex(ValueError, "指定音色不可用"):
+                    await plugin._submit_background_job(
+                        event=event, text="hello", source="command", voice="missing",
+                    )
+        asyncio.run(scenario())
+
     def setUp(self):
         _install_astrbot_stubs()
         self.module = importlib.import_module("astrbot_plugin_mimo_tts_clone.main")
@@ -241,6 +284,10 @@ class ConfigPersistenceTests(unittest.TestCase):
                     },
                 )
                 output = Path(tmp) / "slow.wav"
+                plugin.voice_store.add_voice(
+                    "test", "", "", "test", False,
+                    type="builtin", builtin_voice="mimo_default",
+                )
 
                 async def slow_synthesis(text, **_kwargs):
                     self.assertEqual(text, "这是原始文字。")
@@ -633,7 +680,8 @@ class ConfigPersistenceTests(unittest.TestCase):
             protected.write_bytes(b"protected")
             newer.write_bytes(b"newer")
             plugin._job_manager = types.SimpleNamespace(
-                protected_output_paths=lambda: {protected.resolve()}
+                protected_output_paths=lambda: {protected.resolve()},
+                recoverable_job_ids=lambda: set(),
             )
 
             plugin._cleanup_outputs()

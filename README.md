@@ -5,7 +5,7 @@
 <h1 align="center">MiMo TTS Voice Clone for AstrBot</h1>
 
 <p align="center">
-  基于 MiMo 官方 <code>mimo-v2.5-tts-voiceclone</code> 的 AstrBot TTS 音色克隆插件。<br />
+  基于 MiMo 官方 TTS、VoiceDesign 与 VoiceClone 的 AstrBot 语音插件。<br />
   支持 Pages 可视化管理、多音色切换、情绪路由、可恢复后台任务、可靠性保护与试听诊断。
 </p>
 
@@ -23,6 +23,24 @@
 
 ## 适合谁
 
+### v0.8.0 工作分支
+
+本分支正在完成统一验证，尚未作为正式版本发布。升级与回退见
+[迁移说明](docs/v080-migration.md)，验证状态见
+[进度记录](docs/v080-progress.md)。
+
+- 预置、设计、克隆三类音色分别选择对应模型，不再手动切换全局模型。
+- 设计音色可生成 1–3 个候选，在历史中加入对比，确认授权后另存为克隆音色。
+- `/唱歌 --音色 音色名 --风格 "抒情流行" 歌词` 使用预置音色；
+  可独立设置唱歌默认音色，不影响日常朗读。
+- Web 支持歌词版本、显式 AI 创作、预置模型流式试听与取消。
+- `/tts会话 查看` 展示本会话配置；例如 `/tts会话 概率 0.5`、
+  `/tts会话 导演 关`、`/tts会话 音色 默认`、`/tts会话 重置`。
+- 生成历史位于页面最后，每页最多 10 条，支持播放、下载、重发、
+  候选对比及按数量／天数保留。
+- AI 导演提供关闭、仅指令、保留正文添加标签、允许优化四种模式。
+- 发送状态不确定时请先检查目标端，再确认重试，避免重复发送。
+
 - 想在 AstrBot 里接入 MiMo 官方 voiceclone TTS 的用户。
 - 想用 Pages 页面管理多个授权音色、默认音色和试听流程的机器人管理员。
 - 想让 `/tts` 命令或普通 LLM 回复按概率转为语音的群聊/私聊场景。
@@ -32,7 +50,7 @@
 
 | 模块 | 能力 |
 | --- | --- |
-| 官方 API 接入 | 支持 MiMo v2.5 voiceclone，OpenAI-compatible 调用方式 |
+| 官方 API 接入 | 支持 MiMo v2.5 TTS / VoiceDesign / VoiceClone，OpenAI-compatible 调用方式 |
 | 音色库 | 上传 `mp3` / `wav` 授权样本，本地保存音色元数据 |
 | 多音色路由 | 支持全局、群、用户、情绪四类默认音色 |
 | 情绪控制 | 支持 `happy`、`sad`、`angry`、`neutral`，可自动轻量识别 |

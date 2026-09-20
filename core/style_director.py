@@ -32,6 +32,7 @@ class StyleDirectorInput:
     max_chars: int = 120
     optimize_speech_text: bool = True
     max_speech_chars: int = 500
+    text_mode: str = "optimize"
 
 
 @dataclass(slots=True)
@@ -43,6 +44,13 @@ class StyleDirectorPlan:
 def build_style_director_prompt(data: StyleDirectorInput, template: str = "") -> tuple[str, str]:
     max_chars = max(20, int(data.max_chars or 120))
     system_prompt = _render_template(template or DEFAULT_STYLE_DIRECTOR_PROMPT, max_chars=max_chars)
+    if data.text_mode == "tags":
+        system_prompt += (
+            "\n覆盖上述正文优化要求：不得修改正文任何字符或标点，只允许插入"
+            "(轻声)、(停顿)、(微笑)、(叹气)、(呼吸)、(强调)这六种标签。"
+        )
+    elif data.text_mode in {"instructions", "off"}:
+        system_prompt += "\n不得改写正文，speech_text 必须为空字符串。"
     user_prompt = "\n".join(
         part
         for part in (
@@ -123,11 +131,31 @@ async def generate_style_plan(
         timeout=15,
     )
     output = getattr(response, "completion_text", response)
-    return parse_style_director_plan(
+    plan = parse_style_director_plan(
         output,
         max_chars=data.max_chars,
         max_speech_chars=data.max_speech_chars,
     )
+    plan.speech_text = protect_speech_text(data.text, plan.speech_text, data.text_mode)
+    return plan
+
+
+PERFORMANCE_TAGS = ("轻声", "停顿", "微笑", "叹气", "呼吸", "强调")
+_PERFORMANCE_TAG_RE = re.compile(r"\((?:" + "|".join(PERFORMANCE_TAGS) + r")\)")
+
+
+def protect_speech_text(original: str, candidate: str, mode: str) -> str:
+    if mode in {"instructions", "off"}:
+        return original
+    if not candidate:
+        return original
+    if mode == "tags":
+        # Compare exact characters; whitespace and punctuation are part of the body.
+        body = _PERFORMANCE_TAG_RE.sub("", candidate)
+        source = _PERFORMANCE_TAG_RE.sub("", original)
+        if body != source:
+            return original
+    return candidate
 
 
 async def generate_style_directive(
