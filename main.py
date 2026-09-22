@@ -623,20 +623,29 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             voice: str = "",
             style: str = "",
         ):
-            """Generate and send MiMo TTS voice audio.
+            """Speak text to the user in your own MiMo TTS voice.
+
+            The voice message is your own speech: the user hears you talking, not a
+            generated file. The audio is delivered to the user directly — do not
+            resend it via send_message_to_user. Afterwards, continue the
+            conversation naturally; do not review, quote, or describe the voice
+            message. If delivery fails, tell the user plainly that the voice did
+            not go through; never name internal software, protocols, or file
+            details.
 
             Args:
-                text(string): Text that should be converted to speech.
+                text(string): What you want to say out loud.
                 emotion(string): Optional emotion, one of happy, sad, angry, neutral.
                 voice(string): Optional voice name or voice id.
                 style(string): Optional temporary style instruction.
 
             Returns:
-                string: Generated audio path or a short failure message.
+                string: Short delivery confirmation, or a brief notice that the
+                voice did not reach the user.
             """
             content = str(text or "").strip()
             if not content:
-                yield "empty text"
+                yield "文本为空，没有可说的话"
                 return
             try:
                 output = await self.synthesize_text(
@@ -648,13 +657,14 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                     group_id=str(getattr(event, "unified_msg_origin", "") or "").strip()
                     or self._conversation_id(event),
                 )
+                await self._send_audio_result(event, output)
             except Exception as exc:
-                yield f"tts failed: {exc}"
+                self.logger.warning("[mimo-tts] mimo_tts_speak failed: %s", exc)
+                yield "语音没能送达用户"
                 return
-            await self._send_audio_result(event, output)
             if hasattr(event, "clear_result"):
                 event.clear_result()
-            yield str(output)
+            yield "已用你的声音把这句话说给用户，语音已送达"
             return
 
     @staticmethod
@@ -1251,7 +1261,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                     "[mimo-tts] Record send failed, fallback to file: %s", exc
                 )
         if self.plugin_config.audio_transport == "base64":
-            raise RuntimeError("NapCat 未接受 Base64 语音，已禁止回退为本地路径。")
+            raise RuntimeError("Base64 语音未能发送，已禁止回退为本地路径（audio_transport=base64）。")
         if self.plugin_config.file_fallback_enabled:
             await event.send(event.chain_result([File(name=audio_path.name, file=source)]))
 
