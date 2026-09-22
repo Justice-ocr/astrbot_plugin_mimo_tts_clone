@@ -1082,7 +1082,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 raise RuntimeError(
                     f"无法将音频复制到 Linux 共享目录：{linux_root} ({exc})"
                 ) from exc
-            relative = staged.relative_to(linux_root.resolve())
+            relative = staged.resolve().relative_to(linux_root.resolve())
 
         windows_path = str(PureWindowsPath(windows_root) / PureWindowsPath(relative.as_posix()))
         return windows_path, staged
