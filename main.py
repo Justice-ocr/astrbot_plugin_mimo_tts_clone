@@ -640,8 +640,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 style(string): Optional temporary style instruction.
 
             Returns:
-                string: Short delivery confirmation, or a brief notice that the
-                voice did not reach the user.
+                string: Short delivery confirmation, a brief notice that the
+                voice did not reach the user, or a note that there was nothing
+                to say.
             """
             content = str(text or "").strip()
             if not content:
@@ -1262,8 +1263,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 )
         if self.plugin_config.audio_transport == "base64":
             raise RuntimeError("Base64 语音未能发送，已禁止回退为本地路径（audio_transport=base64）。")
-        if self.plugin_config.file_fallback_enabled:
-            await event.send(event.chain_result([File(name=audio_path.name, file=source)]))
+        if not self.plugin_config.file_fallback_enabled:
+            raise RuntimeError("语音未能发送，且 file_fallback_enabled 已禁用文件回退。")
+        await event.send(event.chain_result([File(name=audio_path.name, file=source)]))
 
     def _background_manager(self) -> TTSJobManager:
         if self._job_manager is None:
