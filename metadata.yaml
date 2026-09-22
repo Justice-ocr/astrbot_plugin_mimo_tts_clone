@@ -13,6 +13,8 @@ author_desc: >
 astrbot_version: ">=4.16.0,<5"
 support_platforms:
   - aiocqhttp
+  - qq_official
+  - qq_official_webhook
 repo: "https://github.com/Justice-ocr/astrbot_plugin_mimo_tts_clone"
 homepage: "https://github.com/Justice-ocr/astrbot_plugin_mimo_tts_clone"
 icon: "logo.png"

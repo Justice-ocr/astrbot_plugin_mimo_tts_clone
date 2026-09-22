@@ -202,6 +202,7 @@ Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrB
 - 显式 `/tts` 比自动语音任务优先，同一会话始终按提交顺序处理。取消任务不会杀死整个 worker。
 - 默认支持 `base64://` Record 传输；针对 AstrBot 在 WSL/Linux、NapCat 在 Windows 且两者共享目录的场景，设置 `audio_transport=shared_path`，插件会先把 WAV 复制到 Linux 共享目录，再将对应 Windows 路径交给 NapCat。
 - `shared_path` 模式会绕过 AstrBot 的 Record/File 高层组件，直接通过 aiocqhttp 底层 OneBot API 发送 Windows 映射路径，避免 Linux 侧提前解析远程路径；`audio_transport=path` 保留旧行为。
+- `shared_path` 仅支持 `aiocqhttp` 平台；QQ 官方平台（`qq_official` / `qq_official_webhook`）请使用 `base64` 或 `path`。
 - 后台长文本会按 `delivery_segment_chars` 分段并发生成，全部成功后按顺序逐条发送。单段原始 WAV 超过 `base64_max_mb` 时停止交付并报告失败。
 - Record 主动发送失败时，在 `file_fallback_enabled=true` 下会重新构造 File 消息发送。
 - Pages 每 5 秒刷新任务和诊断，可取消单个活动任务、清理历史或二次确认后取消全部。
@@ -251,7 +252,7 @@ audio_path = await plugin.text_to_speech(
 | 作者 | Justice-ocr |
 | 作者简介 | AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、Pages 管理体验与实用型机器人扩展 |
 | AstrBot 版本 | `>=4.16.0,<5`（后台文字先发依赖 `after_message_sent` 钩子） |
-| 支持平台 | `aiocqhttp` |
+| 支持平台 | `aiocqhttp`、`qq_official`、`qq_official_webhook` |
 | WebUI 图标 | `logo.png` |
 | README 图标 | `assets/icon.svg` |
 | 许可证 | `MIT` |
