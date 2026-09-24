@@ -70,6 +70,28 @@ class StyleDirectorTests(unittest.TestCase):
         self.assertIn("待朗读文本：今晚月亮很好。", user_prompt)
         self.assertIn("请输出最终 JSON", user_prompt)
 
+    def test_default_template_renders_max_chars(self):
+        system_prompt, _ = build_style_director_prompt(
+            StyleDirectorInput(text="今晚月亮很好。", max_chars=80)
+        )
+
+        self.assertIn("长度控制在 80 字以内", system_prompt)
+        self.assertNotIn("{max_chars}", system_prompt)
+        self.assertIn(
+            '{"style_context":"给 MiMo 的自然语言风格控制指令","speech_text":"只用于音频朗读的优化文本"}',
+            system_prompt,
+        )
+
+    def test_custom_template_containing_json_braces_renders_max_chars(self):
+        system_prompt, _ = build_style_director_prompt(
+            StyleDirectorInput(text="今晚月亮很好。", max_chars=80),
+            template='输出 JSON：{"style_context":"...","speech_text":"..."}，不超过 {max_chars} 字。',
+        )
+
+        self.assertIn("不超过 80 字", system_prompt)
+        self.assertNotIn("{max_chars}", system_prompt)
+        self.assertIn('{"style_context":"...","speech_text":"..."}', system_prompt)
+
     def test_parses_json_director_plan(self):
         result = parse_style_director_plan(
             '{"style_context":"自然一点，像真人聊天。","speech_text":"嗯，晚上好。"}',
