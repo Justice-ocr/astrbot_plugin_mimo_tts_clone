@@ -57,13 +57,14 @@ class QQOfficialSupportTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_chat_scope_recognizes_qq_official_umos(self):
-        scope, ident = self.module.MimoTTSClonePlugin._chat_scope(
+        plugin = self.plugin()
+        scope, ident = plugin._chat_scope(
             self.make_event(f"qq_official:GroupMessage:{FAKE_GROUP_OPENID}")
         )
         self.assertEqual(scope, "group")
         self.assertEqual(ident, f"qq_official:GroupMessage:{FAKE_GROUP_OPENID}")
 
-        scope, ident = self.module.MimoTTSClonePlugin._chat_scope(
+        scope, ident = plugin._chat_scope(
             self.make_event(f"qq_official:FriendMessage:{FAKE_USER_OPENID}")
         )
         self.assertEqual(scope, "private")
