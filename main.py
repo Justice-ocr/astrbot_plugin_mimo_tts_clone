@@ -1149,7 +1149,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             max_segments=self.plugin_config.segment_max_segments,
         )
 
-    def _audio_component(self, audio_path: pathlib.Path):
+    def _audio_component(self, audio_path: pathlib.Path, umo: str = ""):
+        if self.plugin_config.audio_transport == "shared_path":
+            self._ensure_shared_path_platform(umo)
         source, _staged = self._transport_source(audio_path)
         if Record is not None:
             try:
@@ -1211,7 +1213,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 raise RuntimeError(
                     f"无法将音频复制到 Linux 共享目录：{linux_root} ({exc})"
                 ) from exc
-            relative = staged.relative_to(linux_root.resolve())
+            relative = staged.resolve().relative_to(linux_root.resolve())
 
         windows_path = str(PureWindowsPath(windows_root) / PureWindowsPath(relative.as_posix()))
         return windows_path, staged
@@ -1320,6 +1322,29 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             return
         raise RuntimeError("aiocqhttp 客户端不支持 OneBot 消息发送接口。")
 
+    def _ensure_shared_path_platform(self, umo: str) -> None:
+        """Reject shared_path for platforms that cannot consume raw OneBot paths.
+
+        Args:
+            umo: Unified message origin or session string carrying the platform id.
+
+        Raises:
+            RuntimeError: When the resolved platform is not aiocqhttp.
+        """
+        # shared_path is only consumable through the aiocqhttp OneBot client; fail
+        # early with the supported alternatives instead of a numeric-ID parse error.
+        platform_id = str(umo or "").split(":", 1)[0].strip()
+        matches = [
+            item
+            for item in self._platform_capabilities()
+            if platform_id and platform_id in {item["id"], item["name"]}
+        ]
+        if matches and not any(item["name"] == "aiocqhttp" for item in matches):
+            raise RuntimeError(
+                f"shared_path 模式仅支持 aiocqhttp 平台，当前平台为 {platform_id}；"
+                "请改用 audio_transport=base64 或 path。"
+            )
+
     async def _send_shared_path_audio(
         self,
         *,
@@ -1328,6 +1353,11 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
         session: str = "",
     ) -> None:
         """Send a shared Windows path directly through the OneBot client."""
+        self._ensure_shared_path_platform(
+            str(getattr(event, "unified_msg_origin", "") or "")
+            if event is not None
+            else str(session or "")
+        )
         if event is not None:
             bot = getattr(event, "bot", None)
             if bot is None:
@@ -1381,7 +1411,7 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                     "[mimo-tts] Record send failed, fallback to file: %s", exc
                 )
         if self.plugin_config.audio_transport == "base64":
-            raise RuntimeError("NapCat 未接受 Base64 语音，已禁止回退为本地路径。")
+            raise RuntimeError("Base64 语音未能发送，已禁止回退为本地路径（audio_transport=base64）。")
         if self.plugin_config.file_fallback_enabled:
             await event.send(event.chain_result([File(name=audio_path.name, file=source)]))
 
@@ -1957,7 +1987,9 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
             clip_log_text(text),
         )
 
-        audio_component = self._audio_component(output)
+        audio_component = self._audio_component(
+            output, str(getattr(event, "unified_msg_origin", "") or "")
+        )
         if audio_component is None:
             return
         if self.plugin_config.reply_mode == "audio_only":
