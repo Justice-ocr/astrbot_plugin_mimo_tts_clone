@@ -1914,7 +1914,8 @@ class MimoTTSClonePlugin(PagesAPIMixin, Star):
                 accepted = await self._submit_song(event, lyrics, voice, style)
                 yield "歌曲已加入队列。" if accepted else "语音队列已满。"
             except (ValueError, RuntimeError) as exc:
-                yield str(exc)
+                self.logger.warning("[mimo-tts] mimo_tts_sing failed: %s", exc)
+                yield "歌曲未能加入队列"
 
     @filter.on_decorating_result()
     async def auto_tts_reply(self, event: AstrMessageEvent):
