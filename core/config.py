@@ -54,6 +54,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ai_style_director_mode": "direct",
     "ai_style_director_max_chars": 120,
     "ai_style_director_optimize_text": True,
+    "director_text_mode": "optimize",
     "ai_style_director_fallback_to_emotion": True,
     "ai_style_director_debug_log": True,
     "segment_enabled": True,
@@ -113,6 +114,7 @@ class PluginConfig:
     ai_style_director_mode: str
     ai_style_director_max_chars: int
     ai_style_director_optimize_text: bool
+    director_text_mode: str
     ai_style_director_fallback_to_emotion: bool
     ai_style_director_debug_log: bool
     segment_enabled: bool
@@ -239,6 +241,10 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     cfg["ai_style_director_optimize_text"] = _bool_value(
         cfg.get("ai_style_director_optimize_text", True)
     )
+    if "director_text_mode" not in raw:
+        cfg["director_text_mode"] = "optimize" if cfg["ai_style_director_optimize_text"] else "instructions"
+    if cfg["director_text_mode"] not in {"off", "instructions", "tags", "optimize"}:
+        cfg["director_text_mode"] = "instructions"
     cfg["ai_style_director_fallback_to_emotion"] = _bool_value(
         cfg.get("ai_style_director_fallback_to_emotion", True)
     )

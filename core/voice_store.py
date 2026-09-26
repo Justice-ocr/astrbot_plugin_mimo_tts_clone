@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from .model_catalog import MODELS, validate_voice
 
 
 @dataclass(slots=True)
@@ -22,6 +23,14 @@ class VoiceProfile:
     style_context: str = ""
     style_tags: str = ""
     emotion: str = ""
+    type: str = "clone"
+    builtin_voice: str = ""
+    design_prompt: str = ""
+    source_history_id: str = ""
+
+    @property
+    def model(self) -> str:
+        return MODELS[self.type]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VoiceProfile":
@@ -37,6 +46,10 @@ class VoiceProfile:
             style_context=str(data.get("style_context") or ""),
             style_tags=str(data.get("style_tags") or ""),
             emotion=str(data.get("emotion") or ""),
+            type=str(data.get("type") or "clone"),
+            builtin_voice=str(data.get("builtin_voice") or ""),
+            design_prompt=str(data.get("design_prompt") or ""),
+            source_history_id=str(data.get("source_history_id") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +61,9 @@ class VoiceStore:
         self.data_dir = Path(data_dir)
         self.path = self.data_dir / "voices.json"
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        migration_backup = self.data_dir / "voices.pre-v080.json"
+        if self.path.is_file() and not migration_backup.exists():
+            shutil.copyfile(self.path, migration_backup)
         self._state = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -90,7 +106,9 @@ class VoiceStore:
     def list_voices(self, *, include_disabled: bool = True) -> list[VoiceProfile]:
         voices = [VoiceProfile.from_dict(item) for item in self._state["voices"]]
         if not include_disabled:
-            voices = [voice for voice in voices if voice.enabled and voice.consent_confirmed]
+            voices = [voice for voice in voices if voice.enabled and (
+                voice.type != "clone" or voice.consent_confirmed
+            )]
         return voices
 
     def get_voice(self, voice_id: str) -> VoiceProfile | None:
@@ -98,6 +116,33 @@ class VoiceStore:
             if voice.id == voice_id:
                 return voice
         return None
+
+    def duplicate_voice(self, voice_id: str) -> VoiceProfile:
+        voice = self.get_voice(voice_id)
+        if voice is None:
+            raise ValueError("音色不存在")
+        audio = voice.audio_path
+        copied = None
+        if voice.type == "clone":
+            source = Path(audio).resolve()
+            root = (self.data_dir / "voice_refs").resolve()
+            if not source.is_relative_to(root) or not source.is_file():
+                raise ValueError("参考音频不可用")
+            copied = root / f"copy_{uuid.uuid4().hex}{source.suffix}"
+            shutil.copyfile(source, copied)
+            audio = str(copied)
+        try:
+            return self.add_voice(
+                voice.name + " 副本", audio, voice.description, voice.created_by,
+                voice.consent_confirmed, type=voice.type, builtin_voice=voice.builtin_voice,
+                design_prompt=voice.design_prompt, style_context=voice.style_context,
+                style_tags=voice.style_tags, emotion=voice.emotion,
+                source_history_id=voice.source_history_id,
+            )
+        except Exception:
+            if copied:
+                copied.unlink(missing_ok=True)
+            raise
 
     def find_voice(self, selector: str | None) -> VoiceProfile | None:
         needle = str(selector or "").strip()
@@ -123,8 +168,13 @@ class VoiceStore:
         style_context: str = "",
         style_tags: str = "",
         emotion: str = "",
+        type: str = "clone",
+        builtin_voice: str = "",
+        design_prompt: str = "",
+        source_history_id: str = "",
     ) -> VoiceProfile:
-        if not consent_confirmed:
+        validate_voice(type, builtin_voice, design_prompt)
+        if type == "clone" and not consent_confirmed:
             raise ValueError("Voice consent must be explicitly confirmed.")
         voice_id = f"voice_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         voice = VoiceProfile(
@@ -139,6 +189,10 @@ class VoiceStore:
             style_context=str(style_context or ""),
             style_tags=str(style_tags or ""),
             emotion=str(emotion or ""),
+            type=type,
+            builtin_voice=builtin_voice,
+            design_prompt=design_prompt.strip(),
+            source_history_id=source_history_id,
         )
         self._state["voices"].append(voice.to_dict())
         if not self._state.get("global_default_voice_id"):
@@ -150,7 +204,13 @@ class VoiceStore:
         for item in self._state["voices"]:
             if item.get("id") != voice_id:
                 continue
-            for key in ("name", "description", "enabled", "style_context", "style_tags", "emotion"):
+            validate_voice(
+                str(item.get("type") or "clone"),
+                str(changes.get("builtin_voice", item.get("builtin_voice", ""))),
+                str(changes.get("design_prompt", item.get("design_prompt", ""))),
+            )
+            for key in ("name", "description", "enabled", "style_context", "style_tags", "emotion",
+                        "builtin_voice", "design_prompt", "source_history_id"):
                 if key in changes:
                     item[key] = changes[key]
             self.save()
@@ -214,6 +274,25 @@ class VoiceStore:
             "emotion_defaults": dict(self._state.get("emotion_defaults") or {}),
         }
 
+    def set_binding(self, scope: str, key: str, voice_id: str) -> None:
+        if scope not in {"global", "user", "group", "emotion"}:
+            raise ValueError("绑定类型无效")
+        if voice_id:
+            voice = self.get_voice(voice_id)
+            if voice is None or not voice.enabled or (voice.type == "clone" and not voice.consent_confirmed):
+                raise ValueError("绑定音色不可用")
+        if scope == "global":
+            self._state["global_default_voice_id"] = voice_id
+        else:
+            if not key.strip() or len(key) > 256:
+                raise ValueError("绑定目标不能为空或超过 256 字")
+            mapping = self._state[f"{scope}_defaults"]
+            if voice_id:
+                mapping[key] = voice_id
+            else:
+                mapping.pop(key, None)
+        self.save()
+
     def resolve_voice_id(
         self,
         requested_voice: str | None,
@@ -228,15 +307,16 @@ class VoiceStore:
 
         candidates = []
         emotion_key = str(emotion or "").strip().lower()
-        if emotion_key:
-            candidates.append(self._state["emotion_defaults"].get(emotion_key))
         if user_id:
             candidates.append(self._state["user_defaults"].get(str(user_id)))
         if group_id:
             candidates.append(self._state["group_defaults"].get(str(group_id)))
+        if emotion_key:
+            candidates.append(self._state["emotion_defaults"].get(emotion_key))
         candidates.append(self._state.get("global_default_voice_id"))
 
-        enabled_ids = {voice.id for voice in self.list_voices(include_disabled=False)}
+        enabled_ids = {voice.id for voice in self.list_voices(include_disabled=False)
+                       if voice.type != "clone" or voice.consent_confirmed}
         for candidate in candidates:
             if candidate and candidate in enabled_ids:
                 return candidate

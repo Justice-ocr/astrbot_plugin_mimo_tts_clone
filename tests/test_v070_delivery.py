@@ -151,8 +151,8 @@ class V070DeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_delivery_bundle_generates_segments_concurrently_and_writes_manifest_last(self):
         plugin = self.plugin({"max_concurrency": 2})
         segments = ["first", "second"]
-        voice = types.SimpleNamespace()
-        context = types.SimpleNamespace(context="style")
+        voice = self.module.VoiceProfile.from_dict({"id": "test", "type": "builtin", "builtin_voice": "mimo_default"})
+        context = types.SimpleNamespace(context="style", speech_text="first second")
         plugin._prepare_synthesis = lambda *_args, **_kwargs: asyncio.sleep(
             0, result=(voice, context, segments, "data:audio/wav;base64,AAAA")
         )
@@ -215,19 +215,19 @@ class V070DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bundle.exists())
         await plugin.terminate()
 
-    async def test_delivery_bundle_failure_cleans_all_segment_outputs(self):
+    async def test_delivery_bundle_failure_preserves_successful_segments(self):
         plugin = self.plugin({"max_concurrency": 2})
-        voice = types.SimpleNamespace()
-        context = types.SimpleNamespace(context="style")
+        voice = self.module.VoiceProfile.from_dict({"id": "test", "type": "builtin", "builtin_voice": "mimo_default"})
+        context = types.SimpleNamespace(context="style", speech_text="first second")
         plugin._prepare_synthesis = lambda *_args, **_kwargs: asyncio.sleep(
             0,
             result=(voice, context, ["first", "second"], "data:audio/wav;base64,AAAA"),
         )
 
         async def fake_synthesize(text, _voice, **kwargs):
-            kwargs["output_path"].write_bytes(text.encode("ascii"))
             if text == "second":
                 raise RuntimeError("segment failed")
+            kwargs["output_path"].write_bytes(text.encode("ascii"))
             return kwargs["output_path"]
 
         plugin._synthesize_text_to_file = fake_synthesize
@@ -237,7 +237,18 @@ class V070DeliveryTests(unittest.IsolatedAsyncioTestCase):
             await plugin._synthesize_delivery_bundle(job)
 
         outputs = Path(self.temp_dir.name) / "outputs"
-        self.assertEqual(list(outputs.iterdir()), [])
+        bundles = list(outputs.iterdir())
+        self.assertEqual(len(bundles), 1)
+        self.assertTrue((bundles[0] / "generation.json").is_file())
+        self.assertTrue((bundles[0] / "part000.wav").is_file())
+        self.assertFalse((bundles[0] / "manifest.json").exists())
+        generated = []
+        async def retry_synthesize(text, _voice, **kwargs):
+            generated.append(text)
+            kwargs["output_path"].write_bytes(text.encode("ascii"))
+        plugin._synthesize_text_to_file = retry_synthesize
+        await plugin._synthesize_delivery_bundle(job)
+        self.assertEqual(generated, ["second"])
         await plugin.terminate()
 
     async def test_oversized_segment_fails_without_path_fallback(self):

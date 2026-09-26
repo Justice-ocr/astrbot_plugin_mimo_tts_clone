@@ -14,12 +14,13 @@ from .core.audio_codec import (
 from .core.emotion import SUPPORTED_EMOTIONS, normalize_emotion
 from .core.pages_upload import store_voice_sample
 from .core.text_processing import clean_tts_text
+from .studio_api import StudioAPIMixin
 
 
-class PagesAPIMixin:
+class PagesAPIMixin(StudioAPIMixin):
     def _usable_voice(self, voice_id: str):
         voice = self.voice_store.get_voice(voice_id)
-        if voice is None or not voice.enabled or not voice.consent_confirmed:
+        if voice is None or not voice.enabled or (voice.type == "clone" and not voice.consent_confirmed):
             return None
         return voice
 
@@ -56,10 +57,32 @@ class PagesAPIMixin:
             return
         plugin_id = "astrbot_plugin_mimo_tts_clone"
         routes = [
+            ("studio_catalog", self._pages_studio_catalog, ["GET"], "工作台目录"),
+            ("voice_bindings", self._pages_voice_bindings, ["GET"], "音色绑定列表"),
+            ("save_voice_binding", self._pages_save_voice_binding, ["POST"], "管理音色绑定"),
+            ("session_effective", self._pages_session_effective, ["GET"], "会话生效设置"),
+            ("resend_history", self._pages_resend_history, ["POST"], "发送历史音频"),
+            ("lyrics", self._pages_lyrics, ["GET"], "歌词版本"),
+            ("save_lyrics", self._pages_save_lyrics, ["POST"], "保存歌词版本"),
+            ("delete_lyrics", self._pages_delete_lyrics, ["POST"], "删除歌词版本"),
+            ("draft_lyrics", self._pages_draft_lyrics, ["POST"], "AI 创作歌词"),
+            ("export_studio", self._pages_export_studio, ["POST"], "导出音色与风格"),
+            ("import_studio", self._pages_import_studio, ["POST"], "导入音色与风格"),
+            ("create_voice", self._pages_create_voice, ["POST"], "创建预置或设计音色"),
+            ("duplicate_voice", self._pages_duplicate_voice, ["POST"], "复制音色"),
+            ("studio_generate", self._pages_studio_generate, ["POST"], "工作台生成"),
+            ("studio_job", self._pages_studio_job, ["GET"], "试听任务状态"),
+            ("cancel_studio_job", self._pages_cancel_studio_job, ["POST"], "取消试听"),
+            ("generation_history", self._pages_generation_history, ["GET"], "生成历史分页"),
+            ("history_audio", self._pages_history_audio, ["GET"], "历史音频"),
+            ("delete_history", self._pages_delete_history, ["POST"], "删除历史记录"),
+            ("save_studio_setting", self._pages_save_studio_setting, ["POST"], "保存风格与会话设置"),
+            ("history_to_clone", self._pages_history_to_clone, ["POST"], "生成结果保存为克隆音色"),
             ("get_config", self._pages_get_config, ["GET"], "获取 MiMo TTS 配置"),
             ("get_queue_status", self._pages_get_queue_status, ["GET"], "获取后台 TTS 队列状态"),
             ("get_tts_tasks", self._pages_get_tts_tasks, ["GET"], "获取后台 TTS 任务"),
             ("cancel_tts_task", self._pages_cancel_tts_task, ["POST"], "取消后台 TTS 任务"),
+            ("retry_tts_task", self._pages_retry_tts_task, ["POST"], "重试失败 TTS 任务"),
             ("clear_tts_tasks", self._pages_clear_tts_tasks, ["POST"], "清理后台 TTS 任务"),
             ("save_config", self._pages_save_config, ["POST"], "保存 MiMo TTS 配置"),
             ("list_voices", self._pages_list_voices, ["GET"], "列出音色"),
@@ -78,7 +101,7 @@ class PagesAPIMixin:
 
     def _pages_payload(self) -> dict:
         voices = self.voice_store.list_voices()
-        enabled_voices = [voice for voice in voices if voice.enabled and voice.consent_confirmed]
+        enabled_voices = self.voice_store.list_voices(include_disabled=False)
         providers = self._list_ai_providers()
         return {
             "success": True,
@@ -114,6 +137,16 @@ class PagesAPIMixin:
                 "queue_status": self._queue_snapshot(),
             }
         )
+
+    async def _pages_retry_tts_task(self):
+        data = await request.get_json(force=True) or {}
+        if data.get("confirm") is not True:
+            return self._pages_error("请确认重试；发送状态不确定时可能重复发送")
+        retried = await self._background_manager().retry(str(data.get("job_id") or ""))
+        if not retried:
+            return self._pages_error("只能重试失败任务，或当前队列已满")
+        return jsonify({"success": True, "tasks": self._task_list(),
+                        "queue_status": self._queue_snapshot()})
 
     async def _pages_cancel_tts_task(self):
         data = await request.get_json(force=True) or {}
@@ -308,12 +341,16 @@ class PagesAPIMixin:
         if not voice_id:
             return jsonify({"success": False, "error": "缺少 voice_id"}), 400
         changes = {}
-        for key in ("name", "description", "enabled", "style_context", "style_tags", "emotion"):
+        for key in ("name", "description", "enabled", "style_context", "style_tags", "emotion",
+                    "builtin_voice", "design_prompt"):
             if key in data:
                 changes[key] = data[key]
         if "emotion" in changes:
             changes["emotion"] = normalize_emotion(changes["emotion"]) or ""
-        voice = self.voice_store.update_voice(voice_id, **changes)
+        try:
+            voice = self.voice_store.update_voice(voice_id, **changes)
+        except ValueError as exc:
+            return self._pages_error(str(exc))
         if voice is None:
             return jsonify({"success": False, "error": "音色不存在"}), 404
         return jsonify({"success": True, "voice": voice.to_dict()})
@@ -322,8 +359,22 @@ class PagesAPIMixin:
         data = await request.get_json(force=True) or {}
         voice_id = str(data.get("voice_id") or data.get("id") or "").strip()
         voice = self.voice_store.get_voice(voice_id)
+        references = []
+        for category in ("sessions", "defaults"):
+            for key, value in self.studio_store.settings(category).items():
+                if value.get("voice_id") == voice_id:
+                    references.append((category, key, value))
+        if references and data.get("clear_references") is not True:
+            return jsonify({"success": False, "requires_confirmation": True,
+                            "error": "音色正在被会话或唱歌默认设置使用，是否解除这些绑定并删除？"})
+        if self._job_manager is not None:
+            if self._job_manager.references_voice(voice_id):
+                return self._pages_error("此音色仍被后台或失败任务引用，请完成或清理任务后再删除")
+        for category, key, value in references:
+            value.pop("voice_id", None)
+            self.studio_store.save_setting(category, key, value)
         deleted = self.voice_store.delete_voice(voice_id)
-        if voice is not None:
+        if voice is not None and voice.type == "clone":
             self._delete_voice_audio_file(voice.audio_path)
         return jsonify({"success": deleted, "defaults": self.voice_store.defaults()})
 

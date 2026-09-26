@@ -309,6 +309,12 @@
     },
     "default": []
   },
+  "director_text_mode": {
+    "type": "string",
+    "description": "导演正文处理：关闭、仅指令、保留正文加标签或优化文本",
+    "options": ["off", "instructions", "tags", "optimize"],
+    "default": "optimize"
+  },
   "file_fallback_enabled": {
     "type": "bool",
     "description": "语音消息发送失败或当前版本缺少语音组件时，允许回退为文件发送",

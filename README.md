@@ -5,7 +5,7 @@
 <h1 align="center">MiMo TTS Voice Clone for AstrBot</h1>
 
 <p align="center">
-  基于 MiMo 官方 <code>mimo-v2.5-tts-voiceclone</code> 的 AstrBot TTS 音色克隆插件。<br />
+  基于 MiMo 官方 TTS、VoiceDesign 与 VoiceClone 的 AstrBot 语音插件。<br />
   支持 Pages 可视化管理、多音色切换、情绪路由、可恢复后台任务、可靠性保护与试听诊断。
 </p>
 
@@ -23,6 +23,24 @@
 
 ## 适合谁
 
+### v0.8.0 工作分支
+
+本分支正在完成统一验证，尚未作为正式版本发布。升级与回退见
+[迁移说明](docs/v080-migration.md)，验证状态见
+[进度记录](docs/v080-progress.md)。
+
+- 预置、设计、克隆三类音色分别选择对应模型，不再手动切换全局模型。
+- 设计音色可生成 1–3 个候选，在历史中加入对比，确认授权后另存为克隆音色。
+- `/唱歌 --音色 音色名 --风格 "抒情流行" 歌词` 使用预置音色；
+  可独立设置唱歌默认音色，不影响日常朗读。
+- Web 支持歌词版本、显式 AI 创作、预置模型流式试听与取消。
+- `/tts会话 查看` 展示本会话配置；例如 `/tts会话 概率 0.5`、
+  `/tts会话 导演 关`、`/tts会话 音色 默认`、`/tts会话 重置`。
+- 生成历史位于页面最后，每页最多 10 条，支持播放、下载、重发、
+  候选对比及按数量／天数保留。
+- AI 导演提供关闭、仅指令、保留正文添加标签、允许优化四种模式。
+- 发送状态不确定时请先检查目标端，再确认重试，避免重复发送。
+
 - 想在 AstrBot 里接入 MiMo 官方 voiceclone TTS 的用户。
 - 想用 Pages 页面管理多个授权音色、默认音色和试听流程的机器人管理员。
 - 想让 `/tts` 命令或普通 LLM 回复按概率转为语音的群聊/私聊场景。
@@ -32,7 +50,7 @@
 
 | 模块 | 能力 |
 | --- | --- |
-| 官方 API 接入 | 支持 MiMo v2.5 voiceclone，OpenAI-compatible 调用方式 |
+| 官方 API 接入 | 支持 MiMo v2.5 TTS / VoiceDesign / VoiceClone，OpenAI-compatible 调用方式 |
 | 音色库 | 上传 `mp3` / `wav` 授权样本，本地保存音色元数据 |
 | 多音色路由 | 支持全局、群、用户、情绪四类默认音色 |
 | 情绪控制 | 支持 `happy`、`sad`、`angry`、`neutral`，可自动轻量识别 |
@@ -202,6 +220,7 @@ Pages 会在“自动语音访问控制”模块显示当前规则预览；AstrB
 - 显式 `/tts` 比自动语音任务优先，同一会话始终按提交顺序处理。取消任务不会杀死整个 worker。
 - 默认支持 `base64://` Record 传输；针对 AstrBot 在 WSL/Linux、NapCat 在 Windows 且两者共享目录的场景，设置 `audio_transport=shared_path`，插件会先把 WAV 复制到 Linux 共享目录，再将对应 Windows 路径交给 NapCat。
 - `shared_path` 模式会绕过 AstrBot 的 Record/File 高层组件，直接通过 aiocqhttp 底层 OneBot API 发送 Windows 映射路径，避免 Linux 侧提前解析远程路径；`audio_transport=path` 保留旧行为。
+- `shared_path` 仅支持 `aiocqhttp` 平台；QQ 官方平台（`qq_official` / `qq_official_webhook`）请使用 `base64` 或 `path`。
 - 后台长文本会按 `delivery_segment_chars` 分段并发生成，全部成功后按顺序逐条发送。单段原始 WAV 超过 `base64_max_mb` 时停止交付并报告失败。
 - Record 主动发送失败时，在 `file_fallback_enabled=true` 下会重新构造 File 消息发送。
 - Pages 每 5 秒刷新任务和诊断，可取消单个活动任务、清理历史或二次确认后取消全部。
@@ -251,7 +270,7 @@ audio_path = await plugin.text_to_speech(
 | 作者 | Justice-ocr |
 | 作者简介 | AstrBot 插件开发者，关注多模态工作流、AI 绘图/语音插件、Pages 管理体验与实用型机器人扩展 |
 | AstrBot 版本 | `>=4.16.0,<5`（后台文字先发依赖 `after_message_sent` 钩子） |
-| 支持平台 | `aiocqhttp` |
+| 支持平台 | `aiocqhttp`、`qq_official`、`qq_official_webhook` |
 | WebUI 图标 | `logo.png` |
 | README 图标 | `assets/icon.svg` |
 | 许可证 | `MIT` |

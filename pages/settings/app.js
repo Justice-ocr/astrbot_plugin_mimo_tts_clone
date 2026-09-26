@@ -4,6 +4,30 @@ const $ = id => document.getElementById(id);
 const BRIDGE_UNAVAILABLE_MESSAGE = '请在 AstrBot 插件管理页中打开本页面。普通浏览器预览只能查看 UI，不能上传、保存或试听。';
 let bridge = null;
 
+function askConfirmation(message) {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    const text = document.createElement('p');
+    text.textContent = message;
+    const actions = document.createElement('div');
+    actions.className = 'voice-actions';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    const accept = document.createElement('button');
+    accept.textContent = '确认';
+    accept.className = 'primary';
+    const finish = value => { dialog.close(); dialog.remove(); resolve(value); };
+    cancel.addEventListener('click', () => finish(false));
+    accept.addEventListener('click', () => finish(true));
+    dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
+    actions.append(cancel, accept);
+    dialog.append(text, actions);
+    document.body.append(dialog);
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
 function fallbackBridge() {
   return {
     ready: async () => ({}),
@@ -142,11 +166,13 @@ function escapeHtml(value) {
 }
 
 function isVoiceUsable(voice) {
-  return Boolean(voice && voice.enabled !== false && voice.consent_confirmed === true);
+  return Boolean(voice && voice.enabled !== false &&
+    ((voice.type && voice.type !== 'clone') || voice.consent_confirmed === true));
 }
 
 function configPayload() {
   return {
+    director_text_mode: $('director-text-mode').value,
     api_key: $('api-key').value.trim(),
     base_url: $('base-url').value.trim(),
     default_context: $('default-context').value,
@@ -244,7 +270,7 @@ function renderProviderSelect() {
 }
 
 function updateStatus() {
-  $('model-status').textContent = state.config.model || 'voiceclone';
+  $('model-status').textContent = 'TTS / Design / Clone';
   $('emotion-status').textContent = state.config.emotion_routing_enabled === false ? 'OFF' : 'ON';
   $('segment-status').textContent = state.config.segment_enabled === false ? 'OFF' : 'ON';
   $('hero-voice-count').textContent = String(state.voices.length);
@@ -296,7 +322,8 @@ function renderTasks() {
   $('task-list').innerHTML = tasks.map(task => {
     const active = ['queued', 'running', 'delivering'].includes(task.status);
     const recovered = task.recovered ? '<span class="task-flag">恢复</span>' : '';
-    const error = task.error ? `<small class="task-error">${escapeHtml(task.error)}</small>` : '';
+    const failureStage = task.failure_stage === 'delivery' ? '发送未确认' : '生成失败';
+    const error = task.error ? `<small class="task-error">${failureStage}：${escapeHtml(task.error)}</small>` : '';
     return `
       <tr>
         <td><span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>${recovered}</td>
@@ -304,7 +331,7 @@ function renderTasks() {
         <td>${escapeHtml(task.source)}</td>
         <td class="task-session">${escapeHtml(task.session)}</td>
         <td><span>${escapeHtml(task.text_preview)}</span>${error}</td>
-        <td>${active ? `<button class="task-cancel" data-job-id="${escapeHtml(task.id)}">取消</button>` : ''}</td>
+        <td>${active ? `<button class="task-cancel" data-job-id="${escapeHtml(task.id)}">取消</button>` : task.status === 'failed' ? `<button class="task-retry" data-job-id="${escapeHtml(task.id)}">重试</button>` : ''}</td>
       </tr>`;
   }).join('');
 }
@@ -352,8 +379,8 @@ async function confirmCancelAllTasks() {
 function renderReadiness() {
   const readiness = state.readiness || {};
   const enabledVoices = state.voices.filter(isVoiceUsable).length;
-  const hasPreviewText = Boolean($('preview-text').value.trim());
-  const hasPreviewVoice = Boolean($('preview-voice').value);
+  const hasPreviewText = Boolean($('studio-text').value.trim());
+  const hasPreviewVoice = Boolean($('studio-voice').value);
   const previewReady = Boolean(enabledVoices && hasPreviewText && hasPreviewVoice);
   const items = [
     {
@@ -428,8 +455,8 @@ function renderAccessControl() {
 
 function previewDisabledReason() {
   if (!state.voices.some(isVoiceUsable)) return '需要先上传并启用已授权音色。';
-  if (!$('preview-voice').value) return '请选择一个试听音色。';
-  if (!$('preview-text').value.trim()) return '请输入试听文本。';
+  if (!$('studio-voice').value && !$('studio-draft').checked) return '请选择一个试听音色。';
+  if (!$('studio-text').value.trim()) return '请输入试听文本。';
   return '准备中，请稍候。';
 }
 
@@ -451,11 +478,11 @@ function updateActionAvailability() {
   }
 
   const canPreview = Boolean(
-    state.voices.some(isVoiceUsable) &&
-    $('preview-text').value.trim() &&
-    $('preview-voice').value
+    $('studio-text').value.trim() &&
+    ($('studio-voice').value || $('studio-draft').checked)
   );
-  $('preview-btn').disabled = !canPreview;
+  if (!$('studio-generate').classList.contains('is-busy')) $('studio-generate').disabled = !canPreview;
+  if (typeof updateSingDefaultAvailability === 'function') updateSingDefaultAvailability();
   $('test-connection').disabled = !$('live-api-test-enabled').checked;
   setPreviewHint(
     canPreview
@@ -467,6 +494,7 @@ function updateActionAvailability() {
 }
 
 function applyState(payload) {
+  $('director-text-mode').value = payload.config?.director_text_mode || 'optimize';
   state.config = payload.config || {};
   state.voices = payload.voices || [];
   state.defaults = payload.defaults || {};
@@ -478,7 +506,7 @@ function applyState(payload) {
 
   $('api-key').value = '';
   $('base-url').value = state.config.base_url || 'https://api.xiaomimimo.com/v1';
-  $('model').value = state.config.model || 'mimo-v2.5-tts-voiceclone';
+  $('model').value = '由所选音色决定';
   $('default-context').value = state.config.default_context || '';
   $('max-text-chars').value = state.config.max_text_chars || 2500;
   $('max-concurrency').value = state.config.max_concurrency || 2;
@@ -486,6 +514,7 @@ function applyState(payload) {
   $('reply-mode').value = state.config.reply_mode || 'text_and_audio';
   $('delivery-mode').value = state.config.delivery_mode || 'background';
   $('audio-transport').value = state.config.audio_transport || 'base64';
+  if (window.syncStudioTransportFields) window.syncStudioTransportFields();
   $('shared-path-linux').value = state.config.shared_path_linux || '/mnt/c/Users/Public/mimo_tts_audio';
   $('shared-path-windows').value = state.config.shared_path_windows || 'C:\\Users\\Public\\mimo_tts_audio';
   $('delivery-segment-chars').value = state.config.delivery_segment_chars || 500;
@@ -568,12 +597,13 @@ function renderEmotionDefaults() {
 function renderVoices() {
   $('voice-count').textContent = `${state.voices.length} 个音色`;
   const list = $('voice-list');
-  const select = $('preview-voice');
+  const select = $('studio-voice');
+  const selectedVoice = select.value;
   list.innerHTML = '';
   select.innerHTML = '';
 
   if (!state.voices.length) {
-    list.innerHTML = '<div class="empty-state">暂无音色。上传已授权的 mp3 / wav 样本后，MiMo 会按该样本进行 voiceclone。</div>';
+    list.innerHTML = '<div class="empty-state">暂无音色</div>';
     select.innerHTML = '<option value="">暂无音色</option>';
     renderEmotionDefaults();
     return;
@@ -588,6 +618,10 @@ function renderVoices() {
 
     const card = document.createElement('div');
     card.className = `voice-card${disabled ? ' is-disabled' : ''}`;
+    const query = $('voice-search').value.trim().toLowerCase();
+    const type = $('voice-filter').value;
+    card.hidden = Boolean((type && (voice.type || 'clone') !== type) ||
+      (query && !`${voice.name} ${voice.description} ${voice.id}`.toLowerCase().includes(query)));
     card.innerHTML = `
       <div>
         <div class="voice-title">
@@ -595,7 +629,8 @@ function renderVoices() {
           ${isDefault ? '<span class="tag">全局默认</span>' : ''}
           ${disabled ? '<span class="tag">已禁用</span>' : ''}
         </div>
-        <div class="voice-meta">${escapeHtml(voice.description || '无说明')} · ${escapeHtml(voice.id)}${voice.consent_confirmed ? '' : ' · 未确认授权，不可合成'}</div>
+        <div class="voice-meta"><span class="tag voice-kind">${escapeHtml({builtin: '预置音色', design: '设计音色', clone: '克隆音色'}[voice.type || 'clone'] || '未知类型')}</span> ${escapeHtml(voice.description || '无说明')}${(voice.type || 'clone') === 'clone' && !voice.consent_confirmed ? ' · 未确认授权，不可合成' : ''}</div>
+        <details class="voice-identifiers"><summary>音色详情</summary><code>${escapeHtml(voice.id)}</code></details>
       </div>
       <div class="tag-row">
         <span class="tag">建议情绪：${escapeHtml(voice.emotion || '未设置')}</span>
@@ -604,7 +639,9 @@ function renderVoices() {
       </div>
       <div class="voice-meta">风格指令：${escapeHtml(voice.style_context || '无')}</div>
       <div class="voice-actions">
-        <button data-action="default" data-id="${voice.id}">设为默认</button>
+        <button data-action="edit" data-id="${voice.id}">编辑</button>
+        <button data-action="duplicate" data-id="${voice.id}">复制</button>
+        ${isDefault ? '' : `<button data-action="default" data-id="${voice.id}">设为默认</button>`}
         <button data-action="toggle" data-id="${voice.id}">${disabled ? '启用' : '禁用'}</button>
         <button class="danger" data-action="delete" data-id="${voice.id}">删除</button>
       </div>
@@ -621,6 +658,8 @@ function renderVoices() {
   if (lastUploadedVoiceId && state.voices.some(voice => voice.id === lastUploadedVoiceId)) {
     select.value = lastUploadedVoiceId;
     lastUploadedVoiceId = '';
+  } else if ([...select.options].some(option => option.value === selectedVoice)) {
+    select.value = selectedVoice;
   }
   updateActionAvailability();
 }
@@ -746,6 +785,24 @@ function resetDeleteConfirmation(button) {
 }
 
 async function voiceAction(action, id, button = null) {
+  if (action === 'edit') {
+    const voice = state.voices.find(item => item.id === id);
+    $('edit-voice-id').value = id;
+    $('edit-voice-name').value = voice.name;
+    $('edit-voice-description').value = voice.description || '';
+    $('edit-voice-design').value = voice.design_prompt || '';
+    $('edit-voice-design').disabled = voice.type !== 'design';
+    $('edit-voice-style').value = voice.style_context || '';
+    $('edit-voice-tags').value = voice.style_tags || '';
+    $('voice-editor').showModal();
+    return;
+  }
+  if (action === 'duplicate') {
+    await studioPost('duplicate_voice', {id});
+    await refresh();
+    await studioRefresh();
+    return;
+  }
   const voice = state.voices.find(item => item.id === id);
   if (!voice) return;
   let lockedButton = null;
@@ -775,7 +832,10 @@ async function voiceAction(action, id, button = null) {
       resetDeleteConfirmation(button);
       lockedButton = button;
       setBusy(lockedButton, true, '删除中...');
-      const res = await bridge.apiPost('delete_voice', { voice_id: id });
+      let res = await bridge.apiPost('delete_voice', { voice_id: id });
+      if (res.requires_confirmation && await askConfirmation(res.error)) {
+        res = await bridge.apiPost('delete_voice', {voice_id: id, clear_references: true});
+      }
       if (!res.success) throw new Error(res.error || '删除失败');
     }
 
@@ -794,40 +854,11 @@ async function setEmotionDefault(emotion, voiceId) {
   toast(voiceId ? `${emotion} 默认音色已更新` : `${emotion} 默认音色已清空`);
 }
 
-async function preview() {
-  const text = $('preview-text').value.trim();
-  const voiceId = $('preview-voice').value;
-  if (!text) throw new Error('请输入试听文本');
-  if (!voiceId) throw new Error('请选择音色');
-
-  let res;
-  try {
-    res = await bridge.apiPost('synthesize_preview', {
-      text,
-      voice_id: voiceId,
-      emotion: $('preview-emotion').value,
-      context: $('preview-context').value,
-    });
-  } catch (error) {
-    throw new Error(extractErrorMessage(error, '试听失败'));
-  }
-  if (!res.success || !res.audio_data) throw new Error(res.error || '试听失败');
-
-  $('preview-audio').src = res.audio_data;
-  const playPromise = $('preview-audio').play();
-  if (playPromise && typeof playPromise.catch === 'function') {
-    playPromise.catch(() => {
-      setPreviewHint('音频已生成；当前页面环境阻止自动播放，请手动点击播放器播放。', 'warn');
-    });
-  }
-  toast(`试听生成成功，情绪：${res.emotion || 'neutral'}`);
-}
-
 async function testConnection() {
   let res;
   try {
     res = await bridge.apiPost('test_connection', {
-      voice_id: $('preview-voice').value,
+      voice_id: $('studio-voice').value,
       text: '连接测试，声音工作正常。',
     });
   } catch (error) {
@@ -852,6 +883,7 @@ function bind(id, handler, busyText = '处理中...') {
 }
 
 function bindConfigDirtyState() {
+  $('director-text-mode').addEventListener('change', markDirty);
   [
     'api-key',
     'base-url',
@@ -911,8 +943,9 @@ function bindActionAvailability() {
     'voice-file',
     'voice-name',
     'voice-consent',
-    'preview-voice',
-    'preview-text',
+    'studio-voice',
+    'studio-text',
+    'studio-draft',
     'live-api-test-enabled',
   ].forEach(id => {
     const el = $(id);
@@ -932,9 +965,21 @@ function bindProviderSelect() {
 async function init() {
   bridge = await resolveBridge();
   await bridge.ready();
+  $('voice-search').addEventListener('input', renderVoices);
+  $('voice-filter').addEventListener('change', renderVoices);
+  bind('edit-voice-save', async () => {
+    await studioPost('update_voice', {
+      id: $('edit-voice-id').value, name: $('edit-voice-name').value,
+      description: $('edit-voice-description').value,
+      design_prompt: $('edit-voice-design').value,
+      style_context: $('edit-voice-style').value, style_tags: $('edit-voice-tags').value,
+    });
+    $('voice-editor').close();
+    await refresh();
+    await studioRefresh();
+  });
   bind('save-config', saveConfig, '保存中...');
   bind('upload-voice', uploadVoice, '上传中...');
-  bind('preview-btn', preview, '生成中...');
   bind('test-connection', testConnection, '诊断中...');
   bind('refresh-tasks', refreshQueueStatus, '刷新中...');
   bind('clear-task-history', () => clearTasks(false), '清理中...');
@@ -967,11 +1012,32 @@ async function init() {
   $('task-list').addEventListener('click', async event => {
     const button = event.target.closest('button[data-job-id]');
     if (!button) return;
-    await runAction(button, '取消中...', () => cancelTask(button.dataset.jobId));
+    if (button.classList.contains('task-retry')) {
+      if (!await askConfirmation('确认重试？生成失败可能重新计费；若上次发送状态不确定，可能重复发送。')) return;
+      await runAction(button, '重试中...', async () => {
+        const result = await bridge.apiPost('retry_tts_task', {job_id: button.dataset.jobId, confirm: true});
+        if (!result.success) throw new Error(result.error || '重试失败');
+        state.tasks = result.tasks || [];
+        state.queueStatus = result.queue_status || {};
+        updateStatus();
+        renderTasks();
+      });
+    } else {
+      await runAction(button, '取消中...', () => cancelTask(button.dataset.jobId));
+    }
   });
 
   await refresh();
+  if (typeof initStudio === 'function') await initStudio();
   window.setInterval(refreshQueueStatus, 5000);
 }
 
-init().catch(error => toast(extractErrorMessage(error), 'err'));
+function startSettings() {
+  init().catch(error => toast(extractErrorMessage(error), 'err'));
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startSettings, {once: true});
+} else {
+  startSettings();
+}

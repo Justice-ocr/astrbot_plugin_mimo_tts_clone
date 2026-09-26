@@ -152,8 +152,12 @@ class TTSJobManagerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(second._idle.wait(), 1)
 
             self.assertEqual(process_calls, [job.id])
+            self.assertEqual(delivered, [])
+            self.assertEqual(second.list_tasks()[0]["failure_stage"], "delivery")
+            self.assertTrue(await second.retry(job.id))
+            await asyncio.wait_for(second._idle.wait(), 1)
             self.assertEqual(delivered, [(job.id, output)])
-            self.assertTrue(second.list_tasks()[0]["recovered"])
+            self.assertEqual(second.list_tasks()[0]["status"], "completed")
             await second.stop()
 
     async def test_running_job_can_be_cancelled_and_persisted(self):

@@ -1,1 +1,2 @@
 openai>=1.97
+silk-python>=0.2.6

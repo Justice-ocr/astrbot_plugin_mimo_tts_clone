@@ -85,7 +85,7 @@ class VoiceStoreTests(unittest.TestCase):
             store.set_emotion_default("happy", temp_voice.id)
             self.assertEqual(
                 store.resolve_voice_id(None, "user-1", "group-1", emotion="happy"),
-                temp_voice.id,
+                user_voice.id,
             )
             store.set_emotion_default("happy", "")
             self.assertNotIn("happy", store.defaults()["emotion_defaults"])

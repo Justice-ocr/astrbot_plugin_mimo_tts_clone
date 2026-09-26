@@ -171,6 +171,49 @@ class _GetOnlyConfig:
 
 
 class ConfigPersistenceTests(unittest.TestCase):
+    def test_command_arguments_and_safety(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                _StarTools.data_dir = tmp
+                plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+                parsed = plugin._parse_tts_args('-v "voice one" -c "soft tone" First\nSecond -v literal')
+                self.assertEqual(parsed, ("voice one", None, "First\nSecond -v literal", "soft tone"))
+                self.assertEqual(plugin._parse_tts_args("-- -v literal")[2], "-v literal")
+                for text in ("-v", '-v "unfinished', "-unknown x", "-e invalid text"):
+                    with self.assertRaises(ValueError):
+                        plugin._parse_tts_args(text)
+                _, lyrics = plugin._parse_command_options(
+                    "--风格 pop Don't stop\n\nNext verse", {"--风格": "style"},
+                )
+                self.assertEqual(lyrics, "Don't stop\n\nNext verse")
+
+                event = types.SimpleNamespace(
+                    message_str="/tts取消", unified_msg_origin="bot:GroupMessage:123",
+                    get_extra=lambda key: types.SimpleNamespace(
+                        conversation=types.SimpleNamespace(cid="legacy")),
+                    plain_result=lambda text: text, get_sender_id=lambda: "user",
+                )
+                voice = plugin.voice_store.add_voice(
+                    "built", "", "", "", True, type="builtin", builtin_voice="冰糖",
+                )
+                plugin.voice_store.set_global_default(voice.id)
+                plugin.voice_store.set_group_default("legacy", voice.id)
+                self.assertEqual(plugin._conversation_id(event), event.unified_msg_origin)
+                self.assertEqual(
+                    plugin.voice_store.defaults()["group_defaults"][event.unified_msg_origin], voice.id,
+                )
+                plugin._is_admin = lambda event: True
+                self.assertIn("用法", await anext(plugin.cancel_task_command(event)))
+                plugin._is_admin = lambda event: False
+                plugin._queue_snapshot = lambda: (_ for _ in ()).throw(AssertionError("private state read"))
+                self.assertNotIn("queue_last_error", await anext(plugin.status_command(event)))
+                plugin._preflight_session = lambda session: None
+                with self.assertRaisesRegex(ValueError, "指定音色不可用"):
+                    await plugin._submit_background_job(
+                        event=event, text="hello", source="command", voice="missing",
+                    )
+        asyncio.run(scenario())
+
     def setUp(self):
         _install_astrbot_stubs()
         self.module = importlib.import_module("astrbot_plugin_mimo_tts_clone.main")
@@ -241,6 +284,10 @@ class ConfigPersistenceTests(unittest.TestCase):
                     },
                 )
                 output = Path(tmp) / "slow.wav"
+                plugin.voice_store.add_voice(
+                    "test", "", "", "test", False,
+                    type="builtin", builtin_voice="mimo_default",
+                )
 
                 async def slow_synthesis(text, **_kwargs):
                     self.assertEqual(text, "这是原始文字。")
@@ -633,7 +680,8 @@ class ConfigPersistenceTests(unittest.TestCase):
             protected.write_bytes(b"protected")
             newer.write_bytes(b"newer")
             plugin._job_manager = types.SimpleNamespace(
-                protected_output_paths=lambda: {protected.resolve()}
+                protected_output_paths=lambda: {protected.resolve()},
+                recoverable_job_ids=lambda: set(),
             )
 
             plugin._cleanup_outputs()
@@ -869,6 +917,191 @@ class ConfigPersistenceTests(unittest.TestCase):
 
         self.assertNotIn("context", params)
         self.assertIn("style", params)
+
+    @staticmethod
+    def _make_tool_event():
+        return types.SimpleNamespace(
+            unified_msg_origin="FAKE-PLATFORM:GroupMessage:FAKE-GROUP-001",
+            get_sender_id=lambda: "FAKE-SENDER-001",
+            get_extra=lambda key: types.SimpleNamespace(
+                conversation=types.SimpleNamespace(cid="FAKE-CID-001")
+            )
+            if key == "provider_request"
+            else None,
+        )
+
+    @staticmethod
+    def _run_speak(plugin, text):
+        event = ConfigPersistenceTests._make_tool_event()
+
+        async def collect():
+            try:
+                return [
+                    chunk
+                    async for chunk in plugin.mimo_tts_speak(event, text=text)
+                ]
+            finally:
+                await plugin.terminate()
+
+        return asyncio.run(collect())
+
+    def test_mimo_tts_speak_success_result_hides_audio_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+            fake_output = Path(tmp) / "mimo_tts_fake.wav"
+
+            async def fake_synthesize(*_args, **_kwargs):
+                return fake_output
+
+            async def fake_send(_event, _output):
+                return None
+
+            plugin.synthesize_text = fake_synthesize
+            plugin._send_audio_result = fake_send
+
+            chunks = self._run_speak(plugin, "FAKE-TTS-TEXT-001")
+
+            self.assertEqual(len(chunks), 1)
+            self.assertNotIn(".wav", chunks[0])
+            self.assertNotIn(str(fake_output), chunks[0])
+            self.assertNotIn(str(tmp), chunks[0])
+
+    def test_mimo_tts_speak_success_confirms_delivery_and_sends_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+            sent = []
+
+            async def fake_synthesize(*_args, **_kwargs):
+                return Path(tmp) / "mimo_tts_fake.wav"
+
+            async def fake_send(_event, output):
+                sent.append(output)
+
+            plugin.synthesize_text = fake_synthesize
+            plugin._send_audio_result = fake_send
+
+            chunks = self._run_speak(plugin, "FAKE-TTS-TEXT-002")
+
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(chunks, ["已用你的声音把这句话说给用户，语音已送达"])
+
+    def test_mimo_tts_speak_empty_text_returns_fixed_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+
+            async def fake_synthesize(*_args, **_kwargs):
+                raise AssertionError("synthesize must not run for empty text")
+
+            plugin.synthesize_text = fake_synthesize
+
+            chunks = self._run_speak(plugin, "   ")
+
+            self.assertEqual(chunks, ["文本为空，没有可说的话"])
+
+    def test_mimo_tts_speak_send_failure_leaks_no_internal_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+
+            async def fake_synthesize(*_args, **_kwargs):
+                return Path(tmp) / "mimo_tts_fake.wav"
+
+            async def fake_send(_event, _output):
+                raise RuntimeError(
+                    "NapCat rejected the record message at /fake/outputs/mimo_tts_x.wav"
+                )
+
+            plugin.synthesize_text = fake_synthesize
+            plugin._send_audio_result = fake_send
+
+            chunks = self._run_speak(plugin, "FAKE-TTS-TEXT-003")
+
+            self.assertEqual(chunks, ["语音没能送达用户"])
+            self.assertNotIn("已送达", chunks[0])
+            self.assertNotIn("napcat", chunks[0].lower())
+            self.assertTrue(
+                any(
+                    "mimo_tts_speak failed" in str(args)
+                    for args in plugin.logger.warnings
+                )
+            )
+
+    def test_mimo_tts_speak_synthesize_failure_leaks_no_internal_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(_Context(), {})
+
+            async def fake_synthesize(*_args, **_kwargs):
+                raise RuntimeError(
+                    "aiocqhttp OneBot send failed: /fake/outputs/mimo_tts_x.wav"
+                )
+
+            plugin.synthesize_text = fake_synthesize
+
+            chunks = self._run_speak(plugin, "FAKE-TTS-TEXT-004")
+
+            self.assertEqual(chunks, ["语音没能送达用户"])
+            self.assertNotIn("已送达", chunks[0])
+            lowered = chunks[0].lower()
+            self.assertNotIn("aiocqhttp", lowered)
+            self.assertNotIn("onebot", lowered)
+            self.assertNotIn(".wav", lowered)
+            self.assertTrue(
+                any(
+                    "mimo_tts_speak failed" in str(args)
+                    for args in plugin.logger.warnings
+                )
+            )
+
+    def test_send_audio_result_base64_failure_message_is_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(
+                _Context(), {"audio_transport": "base64"}
+            )
+            audio = Path(tmp) / "mimo_tts_fake.wav"
+            audio.write_bytes(b"FAKE-WAV-BYTES")
+
+            async def run():
+                await plugin._send_audio_result(types.SimpleNamespace(), audio)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(run())
+
+            self.assertEqual(
+                str(ctx.exception),
+                "Base64 语音未能发送，已禁止回退为本地路径（audio_transport=base64）。",
+            )
+
+    def test_send_audio_result_raises_instead_of_silent_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _StarTools.data_dir = tmp
+            plugin = self.module.MimoTTSClonePlugin(
+                _Context(),
+                {"audio_transport": "path", "file_fallback_enabled": False},
+            )
+            audio = Path(tmp) / "mimo_tts_fake.wav"
+            audio.write_bytes(b"FAKE-WAV-BYTES")
+
+            async def run():
+                await plugin._send_audio_result(types.SimpleNamespace(), audio)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(run())
+
+            self.assertIn("file_fallback_enabled", str(ctx.exception))
+
+    def test_mimo_tts_speak_docstring_frames_voice_as_own_speech(self):
+        doc = inspect.getdoc(self.module.MimoTTSClonePlugin.mimo_tts_speak) or ""
+        returns_section = doc.partition("Returns:")[2]
+
+        self.assertIn("your own speech", doc)
+        self.assertNotIn("Generated audio path", doc)
+        self.assertNotIn("path", returns_section.lower())
+        self.assertNotIn("napcat", doc.lower())
 
     def test_ai_style_director_adds_hidden_mimo_context(self):
         with tempfile.TemporaryDirectory() as tmp:

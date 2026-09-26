@@ -36,6 +36,10 @@ class TTSJob:
     notify_on_failure: bool = False
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
+    mode: str = "speech"
+    voice_snapshot: dict[str, Any] = field(default_factory=dict)
+    director_enabled: bool | None = None
+    synthesis_snapshot: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TTSJob":
@@ -52,6 +56,10 @@ class TTSJob:
             notify_on_failure=bool(data.get("notify_on_failure", False)),
             id=str(data.get("id") or uuid.uuid4().hex[:12]),
             created_at=float(data.get("created_at") or time.time()),
+            mode="sing" if data.get("mode") == "sing" else "speech",
+            voice_snapshot=dict(data.get("voice_snapshot") or {}),
+            director_enabled=data.get("director_enabled"),
+            synthesis_snapshot=dict(data.get("synthesis_snapshot") or {}),
         )
 
 
@@ -66,6 +74,7 @@ class _JobRecord:
     error: str = ""
     output_path: str = ""
     recovered: bool = False
+    failure_stage: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "_JobRecord":
@@ -82,6 +91,7 @@ class _JobRecord:
             error=str(data.get("error") or ""),
             output_path=str(data.get("output_path") or ""),
             recovered=bool(data.get("recovered", False)),
+            failure_stage=str(data.get("failure_stage") or ""),
         )
 
     def persist_dict(self) -> dict[str, Any]:
@@ -95,6 +105,7 @@ class _JobRecord:
             "error": self.error,
             "output_path": self.output_path,
             "recovered": self.recovered,
+            "failure_stage": self.failure_stage,
         }
 
     def public_dict(self) -> dict[str, Any]:
@@ -113,6 +124,7 @@ class _JobRecord:
             "error": self.error,
             "has_output": bool(self.output_path and Path(self.output_path).is_file()),
             "recovered": self.recovered,
+            "failure_stage": self.failure_stage,
         }
 
 
@@ -182,8 +194,13 @@ class TTSJobManager:
                     record.output_path and Path(record.output_path).is_file()
                 )
                 recoverable_delivery_failure = (
-                    record.status == "failed" and output_ready
+                    record.status == "failed" and output_ready and not record.failure_stage
                 )
+                if record.status == "delivering" and record.job.synthesis_snapshot:
+                    record.status = "failed"
+                    record.failure_stage = "delivery"
+                    record.finished_at = now
+                    record.error = "Delivery interrupted; check recipient before retrying."
                 if record.status not in TERMINAL_STATUSES or recoverable_delivery_failure:
                     age = max(0.0, now - record.job.created_at)
                     if self._recovery_max_age_seconds and age > self._recovery_max_age_seconds:
@@ -290,6 +307,35 @@ class TTSJobManager:
             and record.status in {"queued", "running", "delivering", "failed"}
             and Path(record.output_path).is_file()
         }
+
+    def references_voice(self, voice_id: str) -> bool:
+        return any(
+            record.status in {"queued", "running", "delivering", "failed"}
+            and (record.job.voice == voice_id or record.job.voice_snapshot.get("id") == voice_id)
+            for record in self._records.values()
+        )
+
+    def recoverable_job_ids(self) -> set[str]:
+        return {record.job.id for record in self._records.values()
+                if record.status in {"queued", "running", "delivering", "failed"}}
+
+    async def retry(self, job_id: str) -> bool:
+        """Retry only terminal failures, retaining any complete delivery artifact."""
+        async with self._condition:
+            record = self._records.get(job_id)
+            if (record is None or record.status != "failed" or not self._accepting
+                    or len(self._pending) >= self._max_queue_size):
+                return False
+            record.status = "queued"
+            record.error = ""
+            record.failure_stage = ""
+            record.finished_at = 0
+            self._pending.append(record)
+            self._idle.clear()
+            self._persist()
+            self._condition.notify_all()
+        self.start()
+        return True
 
     async def cancel(self, job_id: str) -> bool:
         async with self._condition:
@@ -435,6 +481,7 @@ class TTSJobManager:
                     return
             except Exception as exc:
                 async with self._condition:
+                    selected.failure_stage = "delivery" if selected.status == "delivering" else "generation"
                     selected.status = "failed"
                     selected.finished_at = time.time()
                     selected.error = f"{type(exc).__name__}: {exc}"
